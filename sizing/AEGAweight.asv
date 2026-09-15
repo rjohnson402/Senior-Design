@@ -32,7 +32,7 @@ FCOMP  = pick(ac,'FCOMP',  0.8);    % composite fraction: 0 metal, 1 all carbon
 FLAPR  = pick(ac,'FLAPR',  0.333);  % movable surface area / wing area
                                     %   (FLOPS default; flaps + ailerons)
 %% ======================= 3. TAILS ======================================
-SHT    = pick(ac,'SHT',    20);   % horizontal tail area
+SHT    = pick(ac,'SHT',    18);   % horizontal tail area
 SVT    = pick(ac,'SVT',     10);   % vertical tail area
 ARVT   = pick(ac,'ARVT',    1.5);   % vertical tail aspect ratio
 TCVT   = pick(ac,'TCVT',    0.10);  % vertical tail thickness-to-chord
@@ -43,7 +43,7 @@ WF     = pick(ac,'WF',      3.66);  % fuselage maximum width
 DF     = pick(ac,'DF',      4.16);  % fuselage maximum depth
 XLP    = pick(ac,'XLP',     4);   % cabin length (drives furnishings)
 %% ======================= 5. FLIGHT CONDITION ===========================
-rho_c    = pick(ac,'rho_c',    0.002048);  % density at cruise
+rho_c    = pick(ac,'rho_c',    0.002377);  % density at cruise
 v_cruise = pick(ac,'v_cruise', 202.6);     % 120 knots true airspeed in ft/s
 dV_ne    = pick(ac,'dV_ne',     50);       % never-exceed margin over cruise, kt
 %% ======================= 6. MOTOR AND POWER ELECTRONICS ================
@@ -82,7 +82,7 @@ NEW    = pick(ac,'NEW',    0);      % wing-mounted motors -> inertia relief in
                                     %   Eq. 38. KEEP AT 0: the 3% per motor was
                                     %   calibrated on airliner engines, not on
                                     %   30 kg electric motors
-HHT    = pick(ac,'HHT',    1);      % 0 body-mounted tail, 1 T-tail (+20% fin)
+HHT    = pick(ac,'HHT',    0);      % 0 body-mounted tail, 1 T-tail (+20% fin)
 Kgear  = pick(ac,'Kgear',  1.0);    % gear length multiplier; use ~1.3 for a
                                     %   pusher needing propeller clearance
 dWinst = pick(ac,'dWinst', 0);      % nacelles, ducts, pylons, mounts, lb
