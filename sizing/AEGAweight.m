@@ -24,7 +24,7 @@ NFLCR  = pick(ac,'NFLCR',  1);      % flight crew; FLOPS Eq. 118 uses 1 for
                                     %   general aviation, not 2
 %% ======================= 2. WING =======================================
 SW     = pick(ac,'SW',     100.0);   % wing reference area
-AR     = pick(ac,'AR',     14);     % aspect ratio, span^2 / area
+AR     = pick(ac,'AR',     10);     % aspect ratio, span^2 / area
 TR     = pick(ac,'TR',     0.45);   % taper ratio, tip chord / root chord
 SWEEP  = pick(ac,'SWEEP',  3);      % quarter-chord sweep, degrees
 TCA    = pick(ac,'TCA',    0.15);   % thickness-to-chord ratio

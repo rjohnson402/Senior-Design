@@ -35,9 +35,8 @@ Lh      = pick(msn,'Lh',       12.47);% horizontal tail arm, ft (3.80 m)
 Lv      = pick(msn,'Lv',       12.47);% vertical tail arm, ft
 %% Drag build-up
 XL      = pick(msn,'XL',       24.0); % fuselage length
-WFus    = pick(msn,'WFus',      2.30);% fuselage width
-DFus    = pick(msn,'DFus',      3.12);% fuselage depth
-SWFUS0  = pick(msn,'SWFUS0',  156);   % fuselage wetted area, baseline
+WFus    = pick(msn,'WFus',      3.66);% fuselage width
+DFus    = pick(msn,'DFus',      4.16);% fuselage depth
 SMISC   = pick(msn,'SMISC',    48.4); % gear fairings, canopy, junctions
 SCOV    = pick(msn,'SCOV',      6.78);% wing area buried in the fuselage
 WETR    = pick(msn,'WETR',      2.05);% wetted / planform for wing and tails
@@ -88,7 +87,8 @@ V     = Vkt*KT2FPS;
 q     = 0.5*rho*V^2;                        % cruise dynamic pressure, lb/ft^2
 WSR   = 0.5*rho*(VS0*KT2FPS)^2*CLmax;       % wing loading from stall, lb/ft^2
 Req   = (range + reserve/60*Vkt)*NM2FT;     % equivalent still-air distance, ft
-SWFUS = SWFUS0*Kfus; % just wetted area of fus times a multiplier for scaling
+DAV = (WFus + DFus) / 2;                        % Eq. 57
+SWFUS = pi() * (XL / DAV - 1.7) * DAV^2;    % Eq. 61
 Ref   = V*XL/nu;                            % fuselage Reynolds number
 Cf_f  = 0.455/log10(Ref)^2.58;              % Prandtl-Schlichting flat plate
 fineness = XL/((WFus + DFus)/2);
@@ -97,7 +97,8 @@ f_fus = Cf_f*FF_f*SWFUS*excr;               % fuselage drag area, ft^2
 f_msc = Cf_m*FF_m*SMISC*excr;
 f_cfg = Cf_c*FFc*dS;
 if Adisc < 0
-    Adisc = NPROP*pi*(Dprop/2)^2;           % total propeller disc area
+    1323 lb
+    Pack energy                  210.0    Adisc = NPROP*pi*(Dprop/2)^2;           % total propeller disc area
 end
 hist = zeros(NMAX,2);
 %% Sizing loop
@@ -118,7 +119,7 @@ for i = 1:NMAX
     CL     = WSR/q;
     CDi    = CL^2/(pi*AR*e_osw);
     LD     = CL/(CD0 + CDi);
-    D      = DG/LD;                                  % cruise drag = thrust, lb
+    D      = DG/LD                                  % cruise drag = thrust, lb
     % propulsive efficiency from disc loading
     CT     = D/(q*Adisc);
     etap   = 2/(1 + sqrt(1 + CT))*prof;
