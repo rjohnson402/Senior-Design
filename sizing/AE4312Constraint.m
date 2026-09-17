@@ -9,16 +9,16 @@ g0 = 32.174;                % Acceleration due to gravity (ft/s^2)
 rho0 = 0.002377;            % Sea-level air density (slugs/ft^3)
 
 % Aerodynamic Parameters (ASTM F2245 LSA Trainer)
-AR = 8.5;                   % Aspect ratio (typical high-efficiency LSA wing)
-e = 0.78;                   % Oswald efficiency factor
+AR = 7;                   % Aspect ratio (typical high-efficiency LSA wing)
+e = 0.70;                   % Oswald efficiency factor
 K1 = 1 / (pi * AR * e);     % Induced drag factor [Formula: K = 1 / (pi * AR * e)]
-CD0 = 0.030;                % Zero-lift drag coefficient (strut-braced/fixed gear)
-CL_max = 1.5;               % Max lift coefficient (clean)
-CL_max_TO = 1.7;            % Max lift coefficient (takeoff configuration)
-CL_max_L = 1.9;             % Max lift coefficient (landing configuration)
+CD0 = 0.0341;                % Zero-lift drag coefficient (strut-braced/fixed gear)
+CL_max = 1.6;               % Max lift coefficient (clean)
+CL_max_TO = 2.1;            % Max lift coefficient (takeoff configuration)
+CL_max_L = 2.1;             % Max lift coefficient (landing configuration)
 
 % Propulsion & Weight Parameters
-eta_p = 0.72;               % Propeller efficiency (fixed pitch / slow speed optimized)
+eta_p = 0.85;               % Propeller efficiency (fixed pitch / slow speed optimized)
 alpha_P = 1.0;              % Electric motor power lapse rate (constant power at low alt)
 beta = 1.0;                 % Weight fraction W/W_TO (Electric: constant weight across mission)
 
@@ -38,9 +38,9 @@ V_stall = 45 * 1.68781;     % Stall speed limit: 45 knots converted to ft/s
 WS_stall_limit = 0.5 * rho0 * (V_stall^2) * CL_max_L; 
 
 % --- CONSTRAINT 2: LSA Cruise Velocity ---
-V_cruise_kts = 95;                      % Target LSA cruise speed in knots
+V_cruise_kts = 120;                      % Target LSA cruise speed in knots
 V_cr = V_cruise_kts * 1.68781;          % Convert to ft/s
-h_cr = 2000;                            % Cruise altitude (ft)
+h_cr = 5000;                            % Cruise altitude (ft)
 [~, ~, ~, rho_cr] = atmospheric_props(h_cr);
 q_cr = 0.5 * rho_cr * V_cr^2;           % Dynamic pressure [Formula: q = 0.5 * rho * V^2]
 
@@ -48,7 +48,7 @@ q_cr = 0.5 * rho_cr * V_cr^2;           % Dynamic pressure [Formula: q = 0.5 * r
 PW_cruise = (beta / (eta_p * alpha_P)) .* V_cr .* ((q_cr ./ (beta .* W_S)) .* CD0 + K1 .* ((beta .* W_S) ./ q_cr)) / 550;
 
 % --- CONSTRAINT 3: Rate of Climb (ROC) ---
-ROC_fpm = 650;                          % Target rate of climb for LSA (ft/min)
+ROC_fpm = 730;                          % Target rate of climb for LSA (ft/min)
 dh_dt = ROC_fpm / 60;                   % Convert to ft/s
 V_climb = 60 * 1.68781;                 % Climb speed: 60 knots in ft/s
 q_climb = 0.5 * rho0 * V_climb^2;       % Dynamic pressure at sea level
