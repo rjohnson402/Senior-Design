@@ -23,22 +23,22 @@ NSEAT  = pick(ac,'NSEAT',  2);      % total seats
 NFLCR  = pick(ac,'NFLCR',  1);      % flight crew; FLOPS Eq. 118 uses 1 for
                                     %   general aviation, not 2
 %% ======================= 2. WING =======================================
-SW     = pick(ac,'SW',     100.0);   % wing reference area
-AR     = pick(ac,'AR',     10);     % aspect ratio, span^2 / area
+SW     = pick(ac,'SW',     80.0);   % wing reference area
+AR     = pick(ac,'AR',     8);     % aspect ratio, span^2 / area
 TR     = pick(ac,'TR',     0.45);   % taper ratio, tip chord / root chord
-SWEEP  = pick(ac,'SWEEP',  3);      % quarter-chord sweep, degrees
+SWEEP  = pick(ac,'SWEEP',  2);      % quarter-chord sweep, degrees
 TCA    = pick(ac,'TCA',    0.15);   % thickness-to-chord ratio
-FCOMP  = pick(ac,'FCOMP',  0.8);    % composite fraction: 0 metal, 1 all carbon
+FCOMP  = pick(ac,'FCOMP',  0.9);    % composite fraction: 0 metal, 1 all carbon
 FLAPR  = pick(ac,'FLAPR',  0.333);  % movable surface area / wing area
                                     %   (FLOPS default; flaps + ailerons)
 %% ======================= 3. TAILS ======================================
 SHT    = pick(ac,'SHT',    20);   % horizontal tail area
-SVT    = pick(ac,'SVT',     10);   % vertical tail area
+SVT    = pick(ac,'SVT',     15);   % vertical tail area
 ARVT   = pick(ac,'ARVT',    1.5);   % vertical tail aspect ratio
 TCVT   = pick(ac,'TCVT',    0.10);  % vertical tail thickness-to-chord
 SWPVT  = pick(ac,'SWPVT',  20);     % vertical tail sweep, degrees
 %% ======================= 4. FUSELAGE ===================================
-XL     = pick(ac,'XL',     24.0);   % fuselage length
+XL     = pick(ac,'XL',     22.0);   % fuselage length
 WF     = pick(ac,'WF',      3.66);  % fuselage maximum width
 DF     = pick(ac,'DF',      4.16);  % fuselage maximum depth
 XLP    = pick(ac,'XLP',     4);   % cabin length (drives furnishings)
