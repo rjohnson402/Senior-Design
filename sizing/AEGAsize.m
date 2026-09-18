@@ -1,146 +1,127 @@
-function out = AEGAsize(msn, cfg)
-% AEGASIZE  Close the weight and sizing loop for a battery-electric trainer.
+function out = AEGAsize(msn)
+%AEGASIZE  Close the weight and sizing loop for a battery-electric trainer.
 %
-%   out = AEGAsize(msn, cfg)   sizes one configuration
-%   AEGAsize()                 sizes the baseline and prints the result
+%   out = AEGAsize(msn)   sizes one design
+%   AEGAsize()            sizes the baseline and prints the result
 %
-%   Calls AEGAweight.m each pass. Iterates design gross weight until the
-%   aircraft closes: weight out = empty weight + payload = weight in.
+%   msn is the shared input struct from AEGAinputs(). READ ONLY: loop results
+%   go into the local struct `st`, which is what AEGAweight receives. The old
+%   pattern of copying msn and writing DG/SW/PTO into the copy is what made
+%   msn.WF and msn.SWFUS silently ignored.
 %
-%   msn = mission, technology and geometry inputs (everything optional)
-%   cfg = configuration modifiers for the propulsor trade study
+%   The cfg argument is gone. Its propulsor-trade knobs (ing, dist, wrec,
+%   Kfus, KHT, KVT, dS, FFc, oth) served a study that is now closed; git has
+%   them if the boundary-layer-ingestion case has to be reopened. dWinst,
+%   Kgear, HHT and NEW moved into msn.
 %
 %   UNITS: weight lb | length ft | area ft^2 | speed ft/s unless noted
-if nargin < 1, msn = struct(); end
-if nargin < 2, cfg = struct(); end
-%% Mission requirements
-payload = pick(msn,'payload', 400);   % 2 occupants x 200 lb incl. baggage
-range   = pick(msn,'range',   300);   % nautical miles
-reserve = pick(msn,'reserve',  45);   % minutes at cruise
-Vkt     = pick(msn,'Vkt',     120);   % cruise, knots true airspeed
-VS0     = pick(msn,'VS0',      60);   % stall, knots calibrated airspeed
-CLmax   = pick(msn,'CLmax',     2.1); % landing configuration, idle power
-ovh     = pick(msn,'ovh',       0.04);% taxi, takeoff, climb, descent allowance
-%% Atmosphere
-rho     = pick(msn,'rho',   0.002377);% sea level density, slug/ft^3
-nu      = pick(msn,'nu',    1.572e-4);% kinematic viscosity, ft^2/s
-%% Wing geometry rules
-AR      = pick(msn,'AR',       14);
-TR      = pick(msn,'TR',        0.45);
-e_osw   = pick(msn,'e_osw',     0.80);% Oswald efficiency factor
-%% Tail sizing rules
-Vh      = pick(msn,'Vh',        0.60);% horizontal tail volume coefficient
-Vv      = pick(msn,'Vv',        0.040);% vertical tail volume coefficient
-Lh      = pick(msn,'Lh',       12.47);% horizontal tail arm, ft (3.80 m)
-Lv      = pick(msn,'Lv',       12.47);% vertical tail arm, ft
-%% Drag build-up
-XL      = pick(msn,'XL',       24.0); % fuselage length
-WFus    = pick(msn,'WFus',      3.66);% fuselage width
-DFus    = pick(msn,'DFus',      4.16);% fuselage depth
-SMISC   = pick(msn,'SMISC',    48.4); % gear fairings, canopy, junctions
-SCOV    = pick(msn,'SCOV',      6.78);% wing area buried in the fuselage
-WETR    = pick(msn,'WETR',      2.05);% wetted / planform for wing and tails
-Cf_w    = pick(msn,'Cf_w',      0.0033);
-FF_w    = pick(msn,'FF_w',      1.30);
-Cf_t    = pick(msn,'Cf_t',      0.0036);
-FF_t    = pick(msn,'FF_t',      1.20);
-Cf_m    = pick(msn,'Cf_m',      0.0040);
-FF_m    = pick(msn,'FF_m',      1.30);
-Cf_c    = pick(msn,'Cf_c',      0.0030);% configuration-added surfaces
-excr    = pick(msn,'excr',      1.13); % excrescence and interference factor
-%% Propulsion and efficiency
-PWkWkg  = pick(msn,'PWkWkg',    0.176);% takeoff power loading, kW per kg
-eta_m   = pick(msn,'eta_m',     0.95);
-eta_pe  = pick(msn,'eta_pe',    0.97);
-prof    = pick(msn,'prof',      0.86); % propeller profile factor
-NPROP   = pick(msn,'NPROP',     1);
-Dprop   = pick(msn,'Dprop',     6.23); % diameter, ft (1.9 m)
-%% Battery
-whkg    = pick(msn,'whkg',    350);    % pack specific energy, Wh/kg
-fusable = pick(msn,'fusable',   0.90);
-%% Configuration modifiers
-dS      = pick(cfg,'dS',        0);    % added wetted area, ft^2
-FFc     = pick(cfg,'FFc',       1.0);  % interference factor on that area
-ing     = pick(cfg,'ing',       0);    % fraction of fuselage wake ingested
-dist    = pick(cfg,'dist',      0);    % distortion loss on the ingested gain
-wrec    = pick(cfg,'wrec',      0.5);  % wake recovery factor
-Adisc   = pick(cfg,'Adisc',    -1);    % total disc area; -1 = compute it
-dWinst  = pick(cfg,'dWinst',    0);    % nacelles, ducts, pylons, lb
-Kgear   = pick(cfg,'Kgear',     1.0);  % gear length multiplier
-Kfus    = pick(cfg,'Kfus',      1.0);  % fuselage wetted area multiplier
-KHT     = pick(cfg,'KHT',       1.0);  % horizontal tail area multiplier
-KVT     = pick(cfg,'KVT',       1.0);  % vertical tail area multiplier
-HHT     = pick(cfg,'HHT',       0);    % T-tail flag
-NEW     = pick(cfg,'NEW',       0);    % wing-mounted motors, keep at 0
-oth     = pick(cfg,'oth',       0);    % other cruise power penalty
-%% Iteration control
-DG      = pick(msn,'DG0',    2050);    % first guess, lb
-NMAX    = pick(msn,'NMAX',     12);
-TOL     = pick(msn,'TOL',       0.5);  % convergence tolerance, lb
-%% Constants
-KT2FPS  = 1.688;        % knots to feet per second
-NM2FT   = 6076.12;      % nautical miles to feet
-FTLB    = 2.6552e6;     % foot-pounds per kilowatt-hour
-LB      = 2.20462;      % kilograms to pounds
-%% Quantities fixed for the whole run
-V     = Vkt*KT2FPS;
-q     = 0.5*rho*V^2;                        % cruise dynamic pressure, lb/ft^2
-WSR   = 0.5*rho*(VS0*KT2FPS)^2*CLmax;       % wing loading from stall, lb/ft^2
-Req   = (range + reserve/60*Vkt)*NM2FT;     % equivalent still-air distance, ft
-DAV = (WFus + DFus) / 2;                        % Eq. 57
-SWFUS = pi() * (XL / DAV - 1.7) * DAV^2;    % Eq. 61
-Ref   = V*XL/nu;                            % fuselage Reynolds number
-Cf_f  = 0.455/log10(Ref)^2.58;              % Prandtl-Schlichting flat plate
-fineness = XL/((WFus + DFus)/2);
-FF_f  = 1 + 60/fineness^3 + fineness/400;
-f_fus = Cf_f*FF_f*SWFUS*excr;               % fuselage drag area, ft^2
-f_msc = Cf_m*FF_m*SMISC*excr;
-f_cfg = Cf_c*FFc*dS;
-if Adisc < 0
-    1323 lb
-    Pack energy                  210.0    Adisc = NPROP*pi*(Dprop/2)^2;           % total propeller disc area
-end
+
+if nargin < 1 || isempty(msn), msn = AEGAinputs(); end
+
+%% ======================= INPUTS ========================================
+payload = msn.payload;  range = msn.range;  reserve = msn.reserve;
+Vkt     = msn.Vkt;      VS0   = msn.VS0;    ovh     = msn.ovh;
+rho_SL  = msn.rho_SL;   rho_cr = msn.rho_cr;  nu = msn.nu_cr;
+AR      = msn.AR;       TR    = msn.TR;     e_osw   = msn.e_osw;
+Vh = msn.Vh;  Vv = msn.Vv;  Lh = msn.Lh;  Lv = msn.Lv;
+XL = msn.XL;  WFus = msn.WFus;  DFus = msn.DFus;
+SMISC = msn.SMISC;  SCOV = msn.SCOV;  WETR = msn.WETR;
+Cf_w = msn.Cf_w;  FF_w = msn.FF_w;
+Cf_t = msn.Cf_t;  FF_t = msn.FF_t;
+Cf_m = msn.Cf_m;  FF_m = msn.FF_m;
+excr = msn.excr;
+eta_m = msn.eta_m;  eta_pe = msn.eta_pe;  prof = msn.prof;
+NPROP = msn.NPROP;
+whkg = msn.whkg;    fusable = msn.fusable;
+
+%% ======================= ITERATION CONTROL =============================
+% This script only. Not design inputs.
+DG    = 2050;   % first guess, lb
+NMAX  = 12;     % outer iteration cap
+TOL   = 0.5;    % convergence tolerance, lb
+
+%% ======================= CONSTANTS =====================================
+KT2FPS = 1.688;      % knots to feet per second
+NM2FT  = 6076.12;    % nautical miles to feet
+FTLB   = 2.6552e6;   % foot-pounds per kilowatt-hour
+LB     = 2.20462;    % kilograms to pounds
+W2KW   = 737.56;     % foot-pounds per second per kilowatt
+
+%% ======================= FIXED FOR THE WHOLE RUN =======================
+% CRUISE IS AT ALTITUDE. rho_cr, not rho_SL. The stall/wing-loading
+% calculation below is the only place sea level belongs, because VS0 is
+% certified at sea level standard day.
+V   = Vkt*KT2FPS;
+q   = 0.5*rho_cr*V^2;                       % cruise dynamic pressure, lb/ft^2
+Req = (range + reserve/60*Vkt)*NM2FT;       % equivalent still-air distance, ft
+
+DAV      = (WFus + DFus)/2;                                   % Eq. 57
+SWFUS    = pi()*(XL/DAV - 1.7)*DAV^2;                         % Eq. 61
+Ref      = V*XL/nu;                         % fuselage Reynolds number
+Cf_f     = 0.455/log10(Ref)^2.58;           % Prandtl-Schlichting flat plate
+fineness = XL/DAV;
+FF_f     = 1 + 60/fineness^3 + fineness/400;
+f_fus    = Cf_f*FF_f*SWFUS*excr;            % fuselage drag area, ft^2
+f_msc    = Cf_m*FF_m*SMISC*excr;
+
 hist = zeros(NMAX,2);
-%% Sizing loop
+
+%% ======================= SIZING LOOP ===================================
 for i = 1:NMAX
-    % geometry follows from the current weight guess
+
+    % ---- maximum lift coefficient -------------------------------------
+    % An INPUT, not a computed result. blow_wind is a check on the
+    % converged design, not a driver: closing CLmax against wing area has
+    % no fixed point (smaller wing -> smaller span -> smaller propellers ->
+    % higher disc loading -> higher slipstream velocity -> smaller wing).
+    CLmax = msn.CLmax_L;
+
+    % ---- geometry follows from the current weight guess ----------------
+    WSR  = 0.5*rho_SL*(VS0*KT2FPS)^2*CLmax;   % wing loading from stall
     SW   = DG/WSR;
     SPAN = sqrt(AR*SW);
     cr   = 2*SW/(SPAN*(1+TR));                       % root chord
     MAC  = (2/3)*cr*(1 + TR + TR^2)/(1+TR);          % mean aerodynamic chord
-    SHT  = Vh*MAC*SW/Lh*KHT;
-    SVT  = Vv*SPAN*SW/Lv*KVT;
-    PTO  = PWkWkg*DG/LB;                             % takeoff power, kW
-    % drag build-up
+    SHT  = Vh*MAC*SW/Lh;
+    SVT  = Vv*SPAN*SW/Lv;
+
+    % propeller geometry follows the span, it is not an input
+    [Dprop, Adisc] = AEGAprop(msn, SW);
+
+    % ---- installed power ----------------------------------------------
+    % msn.PWkWkg comes from AEGAconstraint. Not auto-coupled, because the
+    % constraint needs CD0 which needs the wing which needs the weight;
+    % re-run AEGAconstraint(msn, out.CD0) and update msn.PWkWkg by hand.
+    PTO  = msn.PWkWkg*DG/LB;                         % takeoff power, kW
+
+    % ---- drag build-up -------------------------------------------------
     f_wing = Cf_w*FF_w*WETR*(SW - SCOV)*excr;
     f_tail = Cf_t*FF_t*WETR*(SHT + SVT)*excr;
-    f      = f_wing + f_tail + f_fus + f_msc + f_cfg;
+    f      = f_wing + f_tail + f_fus + f_msc;
     CD0    = f/SW;
     CL     = WSR/q;
     CDi    = CL^2/(pi*AR*e_osw);
     LD     = CL/(CD0 + CDi);
-    D      = DG/LD                                  % cruise drag = thrust, lb
-    % propulsive efficiency from disc loading
-    CT     = D/(q*Adisc);
-    etap   = 2/(1 + sqrt(1 + CT))*prof;
-    eta    = eta_m*eta_pe*etap;
-    % boundary layer ingestion credit, if any
-    fus_share = f_fus*q/D;
-    PSC       = ing*fus_share*wrec*(1 - dist);
-    % mission energy and battery
-    Ebat = D*Req/eta*(1 - PSC)*(1 + oth)*(1 + ovh)/FTLB;   % kWh usable
-    % component weights
-    ac = msn;
-    ac.DG = DG;  ac.SW = SW;  ac.SHT = SHT;  ac.SVT = SVT;
-    ac.SWFUS = SWFUS;  ac.PTO_kW = PTO;  ac.Ebat = Ebat;
-    ac.dWinst = dWinst;  ac.Kgear = Kgear;  ac.HHT = HHT;  ac.NEW = NEW;
-    ac.AR = AR;  ac.TR = TR;  ac.NPROP = NPROP;  ac.Dprop = Dprop;
-    ac.whkg = whkg;  ac.fusable = fusable;  ac.XL = XL;
-    ac.WF = WFus;  ac.DF = DFus;
-    W = AEGAweight(ac);
+    D      = DG/LD;                                  % cruise drag = thrust
+
+    % ---- propulsive efficiency from disc loading -----------------------
+    CT   = D/(q*Adisc);
+    etap = 2/(1 + sqrt(1 + CT))*prof;
+    eta  = eta_m*eta_pe*etap;
+
+    % ---- mission energy and battery ------------------------------------
+    Ebat = D*Req/eta*(1 + ovh)/FTLB;                 % kWh usable
+
+    % ---- component weights ---------------------------------------------
+    st = struct('DG', DG, 'SW', SW, 'SHT', SHT, 'SVT', SVT, ...
+                'PTO_kW', PTO, 'Ebat', Ebat, 'SWFUS', SWFUS, ...
+                'Dprop', Dprop);
+    W = AEGAweight(msn, st);
+
     DGout = W.empty + payload;
     hist(i,:) = [DG, DGout];
     if abs(DGout - DG) < TOL, break; end
+
     if i == 1
         DG = DGout;                                  % plain fixed-point step
     else                                             % secant step thereafter
@@ -149,7 +130,8 @@ for i = 1:NMAX
         DG = hist(i,1) - r1*(hist(i,1) - hist(i-1,1))/(r1 - r0);
     end
 end
-%% Results
+
+%% ======================= RESULTS =======================================
 out.MTOW       = DGout;
 out.W          = W;
 out.SW         = SW;
@@ -158,20 +140,32 @@ out.MAC        = MAC;
 out.SHT        = SHT;
 out.SVT        = SVT;
 out.WSR        = WSR;
+out.CLmax      = CLmax;
 out.CD0        = CD0;
 out.LD         = LD;
 out.drag       = D;
 out.eta_prop   = etap;
 out.eta_total  = eta;
-out.PSC        = PSC;
 out.Ebat       = Ebat;
 out.pack_kWh   = Ebat/fusable;
 out.PTO_kW     = PTO;
-out.Pcruise_kW = D*V/eta/737.56;                     % ft-lb/s to kW
+out.Pcruise_kW = D*V/eta/W2KW;
+% ---- sport-pilot operating check -------------------------------------
+% Part 22 certifies on VS0 in the LANDING configuration. Sport-pilot
+% OPERATION (14 CFR 61.316) is a separate test on VS1, CLEAN. Nothing used
+% to check the second one.
+out.VS1        = sqrt(2*WSR/(msn.rho_SL*msn.CLmax_clean))/1.688;
+out.VS1_ok     = out.VS1 <= msn.VS1_op;
+out.CLclean_req = WSR/(0.5*msn.rho_SL*(msn.VS1_op*1.688)^2);
+out.Dprop      = Dprop;
+out.Adisc      = Adisc;
 out.iterations = i;
 out.history    = hist(1:i,:);
 out.converged  = abs(DGout - DG) < TOL;
-%% Printout
+out.msn        = msn;    % the inputs travel with the answer. save('run.mat',
+                         % 'out') now reproduces this result exactly.
+
+%% ======================= PRINTOUT ======================================
 if nargout == 0
     fprintf('\n  SIZING RESULT   (%d passes, converged = %d)\n', i, out.converged);
     fprintf('  ------------------------------------------\n');
@@ -179,23 +173,25 @@ if nargout == 0
     fprintf('  Empty weight              %8.0f lb\n', W.empty);
     fprintf('  Battery                   %8.0f lb\n', W.battery);
     fprintf('  Pack energy               %8.1f kWh\n', out.pack_kWh);
+    fprintf('  CLmax (landing)           %8.3f\n', CLmax);
     fprintf('  Wing area                 %8.2f ft^2\n', SW);
     fprintf('  Span                      %8.2f ft\n', SPAN);
     fprintf('  Wing loading              %8.2f lb/ft^2\n', WSR);
     fprintf('  CD0                       %8.4f\n', CD0);
     fprintf('  Cruise L/D                %8.2f\n', LD);
     fprintf('  Propeller efficiency      %8.3f\n', etap);
-    fprintf('  BLI power saving          %8.2f %%\n', 100*PSC);
     fprintf('  Takeoff power             %8.0f kW\n', PTO);
-    fprintf('  Cruise power              %8.1f kW\n\n', out.Pcruise_kW);
+    fprintf('  Cruise power              %8.1f kW\n', out.Pcruise_kW);
+    fprintf('  Propeller diameter        %8.2f ft\n', Dprop);
+    fprintf('  VS1 clean                 %8.1f kt  (61.316 limit %d)\n', ...
+            out.VS1, msn.VS1_op);
+    if ~out.VS1_ok
+        fprintf(['  *** FAILS sport-pilot operating limit. Needs ' ...
+                 'CLmax clean %.2f, or W/S below %.1f lb/ft^2 ***\n'], ...
+                out.CLclean_req, ...
+                0.5*msn.rho_SL*(msn.VS1_op*1.688)^2*msn.CLmax_clean);
+    end
+    fprintf('\n');
     clear out
-end
-end
-function v = pick(s, name, default)
-%PICK  Return s.(name) if the caller supplied it, otherwise the default.
-if isfield(s, name) && ~isempty(s.(name))
-    v = s.(name);
-else
-    v = default;
 end
 end

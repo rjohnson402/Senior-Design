@@ -1,113 +1,151 @@
-%% LIGHT-SPORT AIRCRAFT (LSA - ASTM F2245) CONSTRAINT DIAGRAM SCRIPT
-% Units: Imperial (lb, ft, s, hp)
-clear; clc; close all;
+function con = AEGAconstraint(msn, CD0, doplot)
+%AEGACONSTRAINT  Constraint diagram for the AEGA, 14 CFR Part 22 / ASTM F2245.
+%
+%   con = AEGAconstraint(msn, CD0, doplot)
+%   AEGAconstraint()   runs the baseline and plots
+%
+%   msn     shared inputs from AEGAinputs(). READ ONLY.
+%   CD0     zero-lift drag coefficient. Pass out.CD0 from AEGAsize. The old
+%           hardcoded 0.0341 was 42 percent above what the drag build-up
+%           returns and made every power curve too high.
+%   doplot  true to draw the diagram (default true)
+%
+%   RETURNS con.PW_kWkg, the governing takeoff power loading at the design
+%   wing loading. That is the number meant to replace the hardcoded 0.176
+%   in AEGAsize.
+%
+%   UNITS: lb, ft, s. Power-to-weight is carried internally in horsepower
+%   per pound and converted to kilowatts per kilogram on output.
+
+if nargin < 1 || isempty(msn), msn = AEGAinputs(); end
+if nargin < 2 || isempty(CD0), CD0 = 0.024; end   % from the drag build-up
+if nargin < 3, doplot = true; end
+
+%% ======================= INPUTS ========================================
+g0     = msn.g0;
+rho0   = msn.rho_SL;
+rho_cr = msn.rho_cr;
+AR     = msn.AR;
+e      = msn.e_osw;              % was 0.70 here and 0.80 in AEGAsize
+K1     = 1/(pi*AR*e);
+CL_max_TO = msn.CLmax_TO;
+CL_max_L  = msn.CLmax_L;
+eta_cl = msn.etap_cl;            % CLIMB and TAKEOFF. A propeller optimised
+                                 % for 120 kt does not hold cruise efficiency
+                                 % at 60 kt. Using one value for every
+                                 % condition returned 0.085 kW/kg, below both
+                                 % the Velis Electro and the Cessna 172S.
+eta_cr = msn.etap_cr;            % CRUISE and TURN
+V_cr   = msn.Vkt*1.68781;
+V_S0   = msn.VS0*1.68781;
+
+%% ======================= MISSION POINTS ================================
+% This script only. Not shared design inputs.
+ROC_fpm  = 730;      % ft/min climb target
+V_cl_kts = 60;       % best-climb speed, kt
+n_turn   = 1.5;      % load factor, about 48 deg bank
+V_tn_kts = 65;       % manoeuvre speed, kt
+S_TO     = msn.S_field;   % ft. NOTE: the requirement is 1500 ft OVER A
+                          % 50 FT OBSTACLE, but the takeoff parameter
+                          % correlation below is a GROUND ROLL fit. These
+                          % are not the same distance. Resolve before use.
+TOP_div  = 3.8;      % empirical takeoff parameter divisor. NO SOURCE.
+
+alpha_P = 1.0;       % electric: no power lapse with altitude at these heights
+beta    = 1.0;       % electric: weight is constant through the mission
+HP      = 550;       % foot-pounds per second per horsepower
+HP2KWKG = 1.6440;    % horsepower per pound to kilowatts per kilogram
+
+W_S = linspace(4, 30, 200);
+
+%% ======================= CONSTRAINTS ===================================
+% Mattingly power-to-weight, divided by 550 to give horsepower per pound:
+%   P/W = (beta/(eta_p*alpha_P)) * V * [ (q/(beta*W_S))*CD0
+%                                        + K1*(n*beta*W_S/q)^2/(W_S/q)
+%                                        + (1/V)*dh/dt ] / 550
+
+% --- 1. Stall. 14 CFR Part 22 / MOSAIC: VS0 <= 61 KCAS. The team uses 60.
+%        NOT 45 kt: that is the pre-MOSAIC light-sport definition and it
+%        puts this boundary 44 percent too far left.
+WS_stall = 0.5*rho0*V_S0^2*CL_max_L;
+
+% --- 2. Cruise, at altitude
+q_cr = 0.5*rho_cr*V_cr^2;
+PW_cruise = (beta/(eta_cr*alpha_P)).*V_cr.*((q_cr./(beta.*W_S)).*CD0 ...
+            + K1.*((beta.*W_S)./q_cr))/HP;
+
+% --- 3. Rate of climb, sea level
+dh_dt   = ROC_fpm/60;
+V_climb = V_cl_kts*1.68781;
+q_climb = 0.5*rho0*V_climb^2;
+PW_climb = (beta/(eta_cl*alpha_P)).*(V_climb.*((q_climb./(beta.*W_S)).*CD0 ...
+           + K1.*((beta.*W_S)./q_climb)) + dh_dt)/HP;
+
+% --- 4. Level turn, sea level
+V_turn = V_tn_kts*1.68781;
+q_turn = 0.5*rho0*V_turn^2;
+PW_turn = (beta/(eta_cr*alpha_P)).*V_turn.*((q_turn./(beta.*W_S)).*CD0 ...
+          + K1.*((n_turn.*beta.*W_S./q_turn).^2)./(W_S./q_turn))/HP;
+
+% --- 5. Takeoff
+TOP = S_TO/TOP_div;
+PW_takeoff = W_S./(TOP*CL_max_TO*1.0);
+
+%% ======================= DESIGN POINT ==================================
+PW_req = max([PW_cruise; PW_climb; PW_turn; PW_takeoff], [], 1);
+[~, iD] = min(abs(W_S - WS_stall));      % design sits at the stall boundary
+con.WS_design  = WS_stall;
+con.PW_hp_lb   = PW_req(iD);
+con.PW_kWkg    = con.PW_hp_lb*HP2KWKG;
+con.driver     = driverName(PW_cruise(iD), PW_climb(iD), PW_turn(iD), ...
+                            PW_takeoff(iD));
+con.W_S        = W_S;
+con.PW_cruise  = PW_cruise;
+con.PW_climb   = PW_climb;
+con.PW_turn    = PW_turn;
+con.PW_takeoff = PW_takeoff;
+con.CD0        = CD0;
+con.msn        = msn;
+
+%% ======================= PLOT ==========================================
+if doplot
+    figure('Color',[1 1 1],'Position',[100 100 800 600]);
+    hold on; grid on; box on;
+    plot(W_S, PW_cruise,  'b-',  'LineWidth',2, 'DisplayName', ...
+         sprintf('Cruise (%d kt @ %d ft)', msn.Vkt, msn.h_cr));
+    plot(W_S, PW_climb,   'r-',  'LineWidth',2, 'DisplayName', ...
+         sprintf('Climb (%d ft/min @ %d kt)', ROC_fpm, V_cl_kts));
+    plot(W_S, PW_turn,    'm--', 'LineWidth',2, 'DisplayName', ...
+         sprintf('Level turn (%.1fg @ %d kt)', n_turn, V_tn_kts));
+    plot(W_S, PW_takeoff, 'g-.', 'LineWidth',2, 'DisplayName', ...
+         sprintf('Takeoff (%d ft)', S_TO));
+    xline(WS_stall, 'k--', 'LineWidth',2, 'DisplayName', ...
+          sprintf('Stall, VS0 = %d KCAS (%.1f psf)', msn.VS0, WS_stall));
+    plot(con.WS_design, con.PW_hp_lb, 'ko', 'MarkerSize',10, ...
+         'MarkerFaceColor','y', 'DisplayName','Design point');
+    xlabel('Wing loading, W/S (lb/ft^2)','FontSize',12,'FontWeight','bold');
+    ylabel('Power loading, P/W (hp/lb)','FontSize',12,'FontWeight','bold');
+    title('AEGA constraint diagram, 14 CFR Part 22', ...
+          'FontSize',14,'FontWeight','bold');
+    axis([4 30 0 0.15]);
+    legend('Location','northwest','FontSize',10);
+end
+
+if nargout == 0
+    fprintf('\n  CONSTRAINT RESULT\n');
+    fprintf('  ------------------------------------------\n');
+    fprintf('  Design wing loading       %8.2f lb/ft^2\n', con.WS_design);
+    fprintf('  Required power loading    %8.4f hp/lb\n',  con.PW_hp_lb);
+    fprintf('                            %8.4f kW/kg\n',  con.PW_kWkg);
+    fprintf('  Governing constraint      %8s\n',          con.driver);
+    fprintf('  (AEGAsize currently hardcodes 0.176 kW/kg)\n\n');
+    clear con
+end
+end
 
 %% ========================================================================
-% 1. AIRCRAFT & ENVIRONMENTAL PARAMETERS (LSA ASSUMPTIONS)
-% ========================================================================
-g0 = 32.174;                % Acceleration due to gravity (ft/s^2)
-rho0 = 0.002377;            % Sea-level air density (slugs/ft^3)
-
-% Aerodynamic Parameters (ASTM F2245 LSA Trainer)
-AR = 7;                   % Aspect ratio (typical high-efficiency LSA wing)
-e = 0.70;                   % Oswald efficiency factor
-K1 = 1 / (pi * AR * e);     % Induced drag factor [Formula: K = 1 / (pi * AR * e)]
-CD0 = 0.0341;                % Zero-lift drag coefficient (strut-braced/fixed gear)
-CL_max = 1.6;               % Max lift coefficient (clean)
-CL_max_TO = 2.1;            % Max lift coefficient (takeoff configuration)
-CL_max_L = 2.1;             % Max lift coefficient (landing configuration)
-
-% Propulsion & Weight Parameters
-eta_p = 0.85;               % Propeller efficiency (fixed pitch / slow speed optimized)
-alpha_P = 1.0;              % Electric motor power lapse rate (constant power at low alt)
-beta = 1.0;                 % Weight fraction W/W_TO (Electric: constant weight across mission)
-
-% Design Space Vector (Wing Loading range in lb/ft^2 for LSA focus)
-W_S = linspace(4, 25, 100); 
-
-%% ========================================================================
-% 2. CONSTRAINT CALCULATIONS (Power-to-Weight in hp/lb)
-% ========================================================================
-% Note: Mattingly Power-to-Weight Formula (ft-lb/s per lb):
-% P_SL/W_TO = (beta / (eta_p * alpha_P)) * V * { (q*S / (beta*W_TO)) * [CD0 + K1*(n*beta*W_TO / (q*S))^2] + (1/V)*(dh/dt) + (1/g0)*(dV/dt) }
-% Divided by 550 to convert ft-lb/(s*lb) to Shaft Horsepower per lb (hp/lb).
-
-% --- CONSTRAINT 1: LSA Stall Speed Limit (ASTM F2245 max stall limit = 45 kts / 75.95 ft/s) ---
-V_stall = 45 * 1.68781;     % Stall speed limit: 45 knots converted to ft/s
-% Formula: W/S_max = 0.5 * rho0 * V_stall^2 * CL_max_L
-WS_stall_limit = 0.5 * rho0 * (V_stall^2) * CL_max_L; 
-
-% --- CONSTRAINT 2: LSA Cruise Velocity ---
-V_cruise_kts = 120;                      % Target LSA cruise speed in knots
-V_cr = V_cruise_kts * 1.68781;          % Convert to ft/s
-h_cr = 5000;                            % Cruise altitude (ft)
-[~, ~, ~, rho_cr] = atmospheric_props(h_cr);
-q_cr = 0.5 * rho_cr * V_cr^2;           % Dynamic pressure [Formula: q = 0.5 * rho * V^2]
-
-% Formula: (P/W)_cruise = (beta / (eta_p * alpha_P)) * V_cr * [ (q_cr / (beta * W_S)) * CD0 + K1 * (beta * W_S / q_cr) ] / 550
-PW_cruise = (beta / (eta_p * alpha_P)) .* V_cr .* ((q_cr ./ (beta .* W_S)) .* CD0 + K1 .* ((beta .* W_S) ./ q_cr)) / 550;
-
-% --- CONSTRAINT 3: Rate of Climb (ROC) ---
-ROC_fpm = 730;                          % Target rate of climb for LSA (ft/min)
-dh_dt = ROC_fpm / 60;                   % Convert to ft/s
-V_climb = 60 * 1.68781;                 % Climb speed: 60 knots in ft/s
-q_climb = 0.5 * rho0 * V_climb^2;       % Dynamic pressure at sea level
-
-% Formula: (P/W)_climb = (beta / (eta_p * alpha_P)) * [ V_climb * ((q_climb / (beta * W_S))*CD0 + K1*(beta*W_S / q_climb)) + dh_dt ] / 550
-PW_climb = (beta / (eta_p * alpha_P)) .* (V_climb .* ((q_climb ./ (beta .* W_S)) .* CD0 + K1 .* ((beta .* W_S) ./ q_climb)) + dh_dt) / 550;
-
-% --- CONSTRAINT 4: Level Co-Altitude Turn (1.5g LSA Moderate Turn) ---
-n_turn = 1.5;                           % Load factor (~48 deg bank angle)
-V_turn = 65 * 1.68781;                  % Maneuver speed: 65 knots in ft/s
-q_turn = 0.5 * rho0 * V_turn^2;         % Dynamic pressure
-
-% Formula: (P/W)_turn = (beta / (eta_p * alpha_P)) * V_turn * [ (q_turn / (beta * W_S))*CD0 + K1*(n_turn*beta*W_S / q_turn)^2 / (W_S / q_turn) ] / 550
-PW_turn = (beta / (eta_p * alpha_P)) .* V_turn .* ((q_turn ./ (beta .* W_S)) .* CD0 + K1 .* ((n_turn .* beta .* W_S ./ q_turn).^2) ./ (W_S ./ q_turn)) / 550;
-
-% --- CONSTRAINT 5: LSA Takeoff Ground Roll / Field Length ---
-S_TO = 1000;                            % Target takeoff distance (ft)
-sigma_TO = 1.0;                         % Sea level density ratio
-% Empirical LSA Takeoff Parameter: TOP_LSA = S_TO / 3.8
-TOP_LSA = S_TO / 3.8;                     
-% Formula: (P/W)_takeoff = (W_S) / (TOP_LSA * CL_max_TO * sigma_TO)
-PW_takeoff = W_S ./ (TOP_LSA * CL_max_TO * sigma_TO);
-
-%% ========================================================================
-% 3. PLOTTING THE CONSTRAINT DIAGRAM
-% ========================================================================
-figure('Color', [1 1 1], 'Position', [100 100 800 600]);
-hold on; grid on; box on;
-
-% Plot Constraint Curves
-plot(W_S, PW_cruise, 'b-', 'LineWidth', 2, 'DisplayName', 'Cruise (95 kts @ 2,000 ft)');
-plot(W_S, PW_climb, 'r-', 'LineWidth', 2, 'DisplayName', 'Climb Rate (650 ft/min)');
-plot(W_S, PW_turn, 'm--', 'LineWidth', 2, 'DisplayName', 'Level Turn (1.5g @ 65 kts)');
-plot(W_S, PW_takeoff, 'g-.', 'LineWidth', 2, 'DisplayName', 'Takeoff Distance (1,000 ft)');
-
-% Plot Stall Boundary Line
-xline(WS_stall_limit, 'k--', 'LineWidth', 2, 'DisplayName', sprintf('LSA Stall Limit (%.1f psf)', WS_stall_limit));
-
-% Axis Labels and Formatting
-xlabel('Wing Loading, W_{TO}/S (lb/ft^2)', 'FontSize', 12, 'FontWeight', 'bold');
-ylabel('Power-to-Weight Ratio, P_{SL}/W_{TO} (hp/lb)', 'FontSize', 12, 'FontWeight', 'bold');
-title('ASTM F2245 LSA Electric Aircraft Constraint Diagram', 'FontSize', 14, 'FontWeight', 'bold');
-axis([4 25 0 0.12]);
-legend('Location', 'northwest', 'FontSize', 10);
-
-% Highlight Design Feasible Region
-text(9, 0.08, 'FEASIBLE REGION', 'FontSize', 12, 'FontWeight', 'bold', 'Color', [0 0.5 0]);
-
-%% ========================================================================
-% 4. ATMOSPHERIC AUXILIARY FUNCTION
-% ========================================================================
-function [T, P, a, rho] = atmospheric_props(h)
-    % Standard Atmosphere model for troposphere
-    T0 = 518.67;        % Sea level temp (deg R)
-    P0 = 2116.2;        % Sea level pressure (psf)
-    L = 0.00356616;     % Temperature lapse rate (deg R/ft)
-    
-    T = T0 - L * h;
-    P = P0 * (T / T0)^(5.2561);
-    rho = P / (1716.5 * T);
-    a = sqrt(1.4 * 1716.5 * T);
+function s = driverName(c, cl, t, to)
+[~, k] = max([c, cl, t, to]);
+names = {'cruise','climb','turn','takeoff'};
+s = names{k};
 end
