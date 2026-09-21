@@ -40,7 +40,10 @@ msn.VS1_op   = 59;       % KCAS, CLEAN. Sport-pilot operation, 14 CFR 61.316.
                          %   Different test from VS0. Not currently enforced
                          %   anywhere in the toolchain - open question.
 msn.ovh      = 0.04;     % taxi, takeoff, climb, descent energy allowance
-msn.S_field  = 1500;     % ft, field length over a 50 ft obstacle
+msn.S_field  = 1500;     % ft, field length over a 50 ft obstacle. Used by
+                         %   AEGAconstraint for BOTH takeoff and landing.
+msn.enforce_VS1  = false; % true: size W/S to the VS1_op sport-pilot limit
+msn.enforce_land = false; % true: size W/S to landing over 50 ft in S_field
 msn.dV_ne    = 50;       % kt, never-exceed margin over cruise. Equivalent to
                          %   VD = 1.417 VC. Should be a formula tied to the
                          %   ASTM F2245 design speeds, not a constant.
