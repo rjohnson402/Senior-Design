@@ -57,7 +57,7 @@ Req = (range + reserve/60*Vkt)*NM2FT;       % equivalent still-air distance, ft
 
 % Design wing loading comes from the constraint diagram. It depends only on
 % the stall and field-length inputs, not on CD0, so it is fixed for the run.
-con   = AEGAConstraint(msn, [], false);
+con   = AEGAconstraint(msn, [], false);
 WSR   = con.WS_design;
 CLmax = msn.CLmax_L;                        % carried for the printout only
 DAV      = (WFus + DFus)/2;                                   % Eq. 57
@@ -101,7 +101,7 @@ for i = 1:NMAX
     % ---- installed power from the constraint diagram, at this CD0 ------
     % P/W depends on W/S, CD0, K and efficiencies, not on DG, so this is a
     % closed-form call, not a nested loop.
-    con  = AEGAConstraint(msn, CD0, false);
+    con  = AEGAconstraint(msn, CD0, false);
     PTO  = con.PW_kWkg*DG/LB;                        % takeoff shaft power, kW
     CL     = WSR/q;
     CDi    = CL^2/(pi*AR*e_osw);
