@@ -1,4 +1,4 @@
-function con = AEGAContraint(msn, CD0, doplot)
+function con = AEGAConstraint(msn, CD0, doplot)
 %AEGACONSTRAINT  Constraint diagram for the AEGA, 14 CFR Part 22 / ASTM F2245.
 %
 %   con = AEGAconstraint(msn, CD0, doplot)
@@ -118,7 +118,11 @@ for k = 1:numel(names)
     atD(k)      = fh(WS_design);   % exact W/S, not the nearest grid point
 end
 [PW_req, kmax] = max(atD);
+PW_margin = 1.02;  % 2% power margin 
+PW_req    = PW_req * PW_margin;
 
+WS_margin = 0.98; % 2% buffer on maximum wing loading
+WS_design = lim.VS0 * WS_margin;   set_by = 'VS0 certification (92% max)';
 %% ======================= RESULTS =======================================
 con.WS_design  = WS_design;
 con.set_by     = set_by;
@@ -172,8 +176,8 @@ if doplot
          sprintf('Takeoff (%d ft over 50 ft)', S_TO));
     plot(lim.VS0*[1 1],  yl, 'k-',  'LineWidth',2, 'DisplayName', ...
          sprintf('VS0 %d KCAS, certification (%.1f psf)', msn.VS0, lim.VS0));
-    plot(lim.VS1*[1 1],  yl, 'k:',  'LineWidth',2, 'DisplayName', ...
-         sprintf('VS1 %d KCAS, sport pilot (%.1f psf)', msn.VS1_op, lim.VS1));
+    % plot(lim.VS1*[1 1],  yl, 'k:',  'LineWidth',2, 'DisplayName', ...
+    %      sprintf('VS1 %d KCAS, sport pilot (%.1f psf)', msn.VS1_op, lim.VS1));
     plot(lim.land*[1 1], yl, 'k--', 'LineWidth',2, 'DisplayName', ...
          sprintf('Landing %d ft over 50 ft (%.1f psf)', S_L, lim.land));
     plot(WS_design, PW_req, 'ko', 'MarkerSize',10, ...

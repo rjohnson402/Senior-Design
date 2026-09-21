@@ -77,7 +77,7 @@ msn.e_osw       = 0.80;  % Oswald factor. Constraint script previously used
                          %   0.70; they must agree.
 
 %% ===================== WING =========================================
-msn.AR     = 8;          % LOW for torsional stiffness with leading-edge
+msn.AR     = 9;          % LOW for torsional stiffness with leading-edge
                          %   propulsors (whirl flutter). GJ scales roughly as
                          %   chord^4, so AR 8 is about 3x stiffer than AR 14.
                          %   COST: 258 lb at MTOW (2744 vs 2486) and 3.3
