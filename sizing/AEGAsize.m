@@ -32,29 +32,29 @@ e_osw   = pick(msn,'e_osw',     0.80);% Oswald efficiency factor
 Vh      = pick(msn,'Vh',        0.60);% horizontal tail volume coefficient
 Vv      = pick(msn,'Vv',        0.040);% vertical tail volume coefficient
 Lh      = pick(msn,'Lh',       12.47);% horizontal tail arm, ft (3.80 m)
-Lv      = pick(msn,'Lv',       12.47);% vertical tail arm, ft
+msn.Lv      = pick(msn,'Lv',       12.47);% vertical tail arm, ft
 %% Drag build-up
-XL      = pick(msn,'XL',       24.0); % fuselage length
-WFus    = pick(msn,'WFus',      3.66);% fuselage width
-DFus    = pick(msn,'DFus',      4.16);% fuselage depth
-SMISC   = pick(msn,'SMISC',    48.4); % gear fairings, canopy, junctions
-SCOV    = pick(msn,'SCOV',      6.78);% wing area buried in the fuselage
-WETR    = pick(msn,'WETR',      2.05);% wetted / planform for wing and tails
-Cf_w    = pick(msn,'Cf_w',      0.0033);
-FF_w    = pick(msn,'FF_w',      1.30);
-Cf_t    = pick(msn,'Cf_t',      0.0036);
-FF_t    = pick(msn,'FF_t',      1.20);
-Cf_m    = pick(msn,'Cf_m',      0.0040);
-FF_m    = pick(msn,'FF_m',      1.30);
-Cf_c    = pick(msn,'Cf_c',      0.0030);% configuration-added surfaces
-excr    = pick(msn,'excr',      1.13); % excrescence and interference factor
+msn.XL      = pick(msn,'XL',       24.0); % fuselage length
+msn.WFus    = pick(msn,'WFus',      3.66);% fuselage width
+msn.DFus    = pick(msn,'DFus',      4.16);% fuselage depth
+msn.SMISC   = pick(msn,'SMISC',    48.4); % gear fairings, canopy, junctions
+msn.SCOV    = pick(msn,'SCOV',      6.78);% wing area buried in the fuselage
+msn.WETR    = pick(msn,'WETR',      2.05);% wetted / planform for wing and tails
+msn.Cf_w    = pick(msn,'Cf_w',      0.0033);
+msn.FF_w    = pick(msn,'FF_w',      1.30);
+msn.Cf_t    = pick(msn,'Cf_t',      0.0036);
+msn.FF_t    = pick(msn,'FF_t',      1.20);
+msn.Cf_m    = pick(msn,'Cf_m',      0.0040);
+msn.FF_m    = pick(msn,'FF_m',      1.30);
+msn.Cf_c    = pick(msn,'Cf_c',      0.0030);% configuration-added surfaces
+msn.excr    = pick(msn,'excr',      1.13); % excrescence and interference factor
 %% Propulsion and efficiency
-PWkWkg  = pick(msn,'PWkWkg',    0.176);% takeoff power loading, kW per kg
-eta_m   = pick(msn,'eta_m',     0.95);
-eta_pe  = pick(msn,'eta_pe',    0.97);
-prof    = pick(msn,'prof',      0.86); % propeller profile factor
-NPROP   = pick(msn,'NPROP',     1);
-Dprop   = pick(msn,'Dprop',     6.23); % diameter, ft (1.9 m)
+msn.PWkWkg  = pick(msn,'PWkWkg',    0.176);% takeoff power loading, kW per kg
+msn.eta_m   = pick(msn,'eta_m',     0.95);
+msn.eta_pe  = pick(msn,'eta_pe',    0.97);
+msn.prof    = pick(msn,'prof',      0.86); % propeller profile factor
+msn.NPROP   = pick(msn,'NPROP',     8);
+msn.Dprop   = pick(msn,'Dprop',     6.23); % diameter, ft (1.9 m)
 %% Battery
 whkg    = pick(msn,'whkg',    350);    % pack specific energy, Wh/kg
 fusable = pick(msn,'fusable',   0.90);
@@ -85,6 +85,7 @@ LB      = 2.20462;      % kilograms to pounds
 %% Quantities fixed for the whole run
 V     = Vkt*KT2FPS;
 q     = 0.5*rho*V^2;                        % cruise dynamic pressure, lb/ft^2
+
 WSR   = 0.5*rho*(VS0*KT2FPS)^2*CLmax;       % wing loading from stall, lb/ft^2
 Req   = (range + reserve/60*Vkt)*NM2FT;     % equivalent still-air distance, ft
 DAV = (WFus + DFus) / 2;                        % Eq. 57
@@ -96,16 +97,18 @@ FF_f  = 1 + 60/fineness^3 + fineness/400;
 f_fus = Cf_f*FF_f*SWFUS*excr;               % fuselage drag area, ft^2
 f_msc = Cf_m*FF_m*SMISC*excr;
 f_cfg = Cf_c*FFc*dS;
-if Adisc < 0
-    1323 lb
-    Pack energy                  210.0    Adisc = NPROP*pi*(Dprop/2)^2;           % total propeller disc area
-end
+% if Adisc < 0
+%     1323 lb
+%     Pack energy                  210.0    Adisc = NPROP*pi*(Dprop/2)^2;           % total propeller disc area
+% end
 hist = zeros(NMAX,2);
 %% Sizing loop
 for i = 1:NMAX
     % geometry follows from the current weight guess
     SW   = DG/WSR;
+    msn.SW = SW;
     SPAN = sqrt(AR*SW);
+    msn.SPAN = SPAN;
     cr   = 2*SW/(SPAN*(1+TR));                       % root chord
     MAC  = (2/3)*cr*(1 + TR + TR^2)/(1+TR);          % mean aerodynamic chord
     SHT  = Vh*MAC*SW/Lh*KHT;
@@ -116,11 +119,19 @@ for i = 1:NMAX
     f_tail = Cf_t*FF_t*WETR*(SHT + SVT)*excr;
     f      = f_wing + f_tail + f_fus + f_msc + f_cfg;
     CD0    = f/SW;
+    msn.CD0 = CD0;
     CL     = WSR/q;
+    msn.CL_cruise = CL;
     CDi    = CL^2/(pi*AR*e_osw);
     LD     = CL/(CD0 + CDi);
-    D      = DG/LD                                  % cruise drag = thrust, lb
+    D      = DG/LD;                                  % cruise drag = thrust, lb
+    aero_info.CL = CL;
+    aero_info.D = D;
     % propulsive efficiency from disc loading
+
+    prop_diam = (SPAN - WFus) / NPROP;
+    Adisc = NPROP * pi * (prop_diam/2)^2; % value for area property
+
     CT     = D/(q*Adisc);
     etap   = 2/(1 + sqrt(1 + CT))*prof;
     eta    = eta_m*eta_pe*etap;
@@ -138,6 +149,11 @@ for i = 1:NMAX
     ac.whkg = whkg;  ac.fusable = fusable;  ac.XL = XL;
     ac.WF = WFus;  ac.DF = DFus;
     W = AEGAweight(ac);
+    
+    CLmax_blown = blow_wind(msn, VS0, 'landing');
+    WSR   = 0.5*rho*(VS0*KT2FPS)^2*CLmax_blown;       % wing loading from stall, lb/ft^2
+    
+    fprintf("Iteration %d, Wing Loading %.2d\n", i, WSR)
     DGout = W.empty + payload;
     hist(i,:) = [DG, DGout];
     if abs(DGout - DG) < TOL, break; end
@@ -189,13 +205,5 @@ if nargout == 0
     fprintf('  Takeoff power             %8.0f kW\n', PTO);
     fprintf('  Cruise power              %8.1f kW\n\n', out.Pcruise_kW);
     clear out
-end
-end
-function v = pick(s, name, default)
-%PICK  Return s.(name) if the caller supplied it, otherwise the default.
-if isfield(s, name) && ~isempty(s.(name))
-    v = s.(name);
-else
-    v = default;
 end
 end
