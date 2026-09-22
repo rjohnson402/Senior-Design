@@ -55,6 +55,11 @@ V   = Vkt*KT2FPS;
 q   = 0.5*rho_cr*V^2;                       % cruise dynamic pressure, lb/ft^2
 Req = (range + reserve/60*Vkt)*NM2FT;       % equivalent still-air distance, ft
 
+% Design wing loading comes from the constraint diagram. It depends only on
+% the stall and field-length inputs, not on CD0, so it is fixed for the run.
+con   = AEGAconstraint(msn, [], false);
+WSR   = con.WS_design;
+CLmax = msn.CLmax_L;                        % carried for the printout only
 DAV      = (WFus + DFus)/2;                                   % Eq. 57
 SWFUS    = pi()*(XL/DAV - 1.7)*DAV^2;                         % Eq. 61
 Ref      = V*XL/nu;                         % fuselage Reynolds number
@@ -74,34 +79,45 @@ for i = 1:NMAX
     % converged design, not a driver: closing CLmax against wing area has
     % no fixed point (smaller wing -> smaller span -> smaller propellers ->
     % higher disc loading -> higher slipstream velocity -> smaller wing).
-    CLmax = msn.CLmax_L;
 
     % ---- geometry follows from the current weight guess ----------------
     WSR  = 0.5*rho_SL*(VS0*KT2FPS)^2*CLmax;   % wing loading from stall
-    for k = 1:20
-        SW   = DG/WSR;             SPAN = sqrt(AR*SW);
-        cr   = 2*SW/(SPAN*(1+TR)); MAC  = (2/3)*cr*(1+TR+TR^2)/(1+TR);
-        SHT  = Vh*MAC*SW/Lh;   SVT  = Vv*SPAN*SW/Lv;
+    if msn.use_blown_wind
+        for k = 1:20
+            SW   = DG/WSR;             SPAN = sqrt(AR*SW);
+            cr   = 2*SW/(SPAN*(1+TR)); MAC  = (2/3)*cr*(1+TR+TR^2)/(1+TR);
+            SHT  = Vh*MAC*SW/Lh;   SVT  = Vv*SPAN*SW/Lv;
+            % ---- drag build-up -------------------------------------------------
+            f_wing = Cf_w*FF_w*WETR*(SW - SCOV)*excr;
+            f_tail = Cf_t*FF_t*WETR*(SHT + SVT)*excr;
+            CD0    = (f_wing + f_tail + f_fus + f_msc)/SW;
+            msn.SW = SW;  msn.SPAN = SPAN;  msn.CD0 = CD0;
+            WSRnew = 0.5*rho_SL*(VS0*KT2FPS)^2*blow_wind(msn, VS0, 'landing');
+            if abs(WSRnew - WSR) < 1e-3, break; end
+            WSR = WSRnew;
+        end
+    else
+        SW   = DG/WSR;
+        SPAN = sqrt(AR*SW);
+        cr   = 2*SW/(SPAN*(1+TR));                       % root chord
+        MAC  = (2/3)*cr*(1 + TR + TR^2)/(1+TR);          % mean aerodynamic chord
+        SHT  = Vh*MAC*SW/Lh;
+        SVT  = Vv*SPAN*SW/Lv;
         % ---- drag build-up -------------------------------------------------
         f_wing = Cf_w*FF_w*WETR*(SW - SCOV)*excr;
         f_tail = Cf_t*FF_t*WETR*(SHT + SVT)*excr;
-        CD0    = (f_wing + f_tail + f_fus + f_msc)/SW;
-        msn.SW = SW;  msn.SPAN = SPAN;  msn.CD0 = CD0;
-        WSRnew = 0.5*rho_SL*(VS0*KT2FPS)^2*blow_wind(msn, VS0, 'landing');
-        if abs(WSRnew - WSR) < 1e-3, break; end
-        WSR = WSRnew;
+        f      = f_wing + f_tail + f_fus + f_msc;
+        CD0    = f/SW;
     end
 
     % propeller geometry follows the span, it is not an input
     [Dprop, Adisc] = AEGAprop(msn, SW);
 
-    % ---- installed power ----------------------------------------------
-    % msn.PWkWkg comes from AEGAconstraint. Not auto-coupled, because the
-    % constraint needs CD0 which needs the wing which needs the weight;
-    % re-run AEGAconstraint(msn, out.CD0) and update msn.PWkWkg by hand.
-    PTO  = msn.PWkWkg*DG/LB;                         % takeoff power, kW
-
-
+    % ---- installed power from the constraint diagram, at this CD0 ------
+    % P/W depends on W/S, CD0, K and efficiencies, not on DG, so this is a
+    % closed-form call, not a nested loop.
+    con  = AEGAconstraint(msn, CD0, false);
+    PTO  = con.PW_kWkg*DG/LB;                        % takeoff shaft power, kW
     CL     = WSR/q;
     msn.CL_cruise = CL;
     CDi    = CL^2/(pi*AR*e_osw);
@@ -159,6 +175,7 @@ out.Ebat       = Ebat;
 out.pack_kWh   = Ebat/fusable;
 out.PTO_kW     = PTO;
 out.Pcruise_kW = D*V/eta/W2KW;
+out.con        = con;
 % ---- sport-pilot operating check -------------------------------------
 % Part 22 certifies on VS0 in the LANDING configuration. Sport-pilot
 % OPERATION (14 CFR 61.316) is a separate test on VS1, CLEAN. Nothing used
@@ -170,7 +187,7 @@ out.Dprop      = Dprop;
 out.Adisc      = Adisc;
 out.iterations = i;
 out.history    = hist(1:i,:);
-out.converged  = abs(DGout - DG) < TOL;
+out.converged  = abs(hist(i,2) - hist(i,1)) < TOL;
 out.msn        = msn;    % the inputs travel with the answer. save('run.mat',
                          % 'out') now reproduces this result exactly.
 
@@ -190,6 +207,7 @@ if nargout == 0
     fprintf('  Cruise L/D                %8.2f\n', LD);
     fprintf('  Propeller efficiency      %8.3f\n', etap);
     fprintf('  Takeoff power             %8.0f kW\n', PTO);
+    fprintf('  Power loading             %8.4f kW/kg (%s governs)\n', con.PW_kWkg, con.driver);
     fprintf('  Cruise power              %8.1f kW\n', out.Pcruise_kW);
     fprintf('  Propeller diameter        %8.2f ft\n', Dprop);
     fprintf('  VS1 clean                 %8.1f kt  (61.316 limit %d)\n', ...

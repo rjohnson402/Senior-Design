@@ -40,7 +40,10 @@ msn.VS1_op   = 59;       % KCAS, CLEAN. Sport-pilot operation, 14 CFR 61.316.
                          %   Different test from VS0. Not currently enforced
                          %   anywhere in the toolchain - open question.
 msn.ovh      = 0.04;     % taxi, takeoff, climb, descent energy allowance
-msn.S_field  = 1500;     % ft, field length over a 50 ft obstacle
+msn.S_field  = 1500;     % ft, field length over a 50 ft obstacle. Used by
+                         %   AEGAconstraint for BOTH takeoff and landing.
+msn.enforce_VS1  = false; % true: size W/S to the VS1_op sport-pilot limit
+msn.enforce_land = false; % true: size W/S to landing over 50 ft in S_field
 msn.dV_ne    = 50;       % kt, never-exceed margin over cruise. Equivalent to
                          %   VD = 1.417 VC. Should be a formula tied to the
                          %   ASTM F2245 design speeds, not a constant.
@@ -74,7 +77,7 @@ msn.e_osw       = 0.80;  % Oswald factor. Constraint script previously used
                          %   0.70; they must agree.
 
 %% ===================== WING =========================================
-msn.AR     = 8;          % LOW for torsional stiffness with leading-edge
+msn.AR     = 9;          % LOW for torsional stiffness with leading-edge
                          %   propulsors (whirl flutter). GJ scales roughly as
                          %   chord^4, so AR 8 is about 3x stiffer than AR 14.
                          %   COST: 258 lb at MTOW (2744 vs 2486) and 3.3
