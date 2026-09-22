@@ -1,4 +1,4 @@
-function con = AEGAconstraint(msn, CD0, doplot)
+function con = AEGAconstraint(msn, CD0, doplot, WS_override, CLmax_blown)
 %AEGACONSTRAINT  Constraint diagram for the AEGA, 14 CFR Part 22 / ASTM F2245.
 %
 %   con = AEGAconstraint(msn, CD0, doplot)
@@ -83,13 +83,15 @@ lim.VS1  = 0.5*rho0*(msn.VS1_op*KT)^2*msn.CLmax_clean;
 VSL_max  = sqrt(S_L/0.5136);                               % KCAS
 lim.land = 0.5*rho0*(VSL_max*KT)^2*msn.CLmax_L;
 
-WS_design = lim.VS0;   set_by = 'VS0 certification';
+WS_margin = 0.98;
+WS_design = lim.VS0*WS_margin;   set_by = 'VS0 certification';
 if msn.enforce_VS1  && lim.VS1  < WS_design
     WS_design = lim.VS1;   set_by = 'VS1 sport pilot';
 end
 if msn.enforce_land && lim.land < WS_design
     WS_design = lim.land;  set_by = 'landing distance';
 end
+if nargin >= 4 && ~isempty(WS_override), WS_design = WS_override; set_by = 'blown wing'; end
 
 %% ======================= POWER LOADING CONSTRAINTS =====================
 % Mattingly, beta = alpha = 1:
@@ -121,8 +123,7 @@ end
 PW_margin = 1.02;  % 2% power margin 
 PW_req    = PW_req * PW_margin;
 
-WS_margin = 0.98; % 2% buffer on maximum wing loading
-WS_design = lim.VS0 * WS_margin;   set_by = 'VS0 certification (92% max)';
+
 %% ======================= RESULTS =======================================
 con.WS_design  = WS_design;
 con.set_by     = set_by;
@@ -138,7 +139,11 @@ con.CL_climb   = msn.CLmax_clean/k_cl^2;
 con.V_turn_kt  = k_tn*sqrt(n_turn)*VS1(WS_design)/KT;
 con.CL_turn    = msn.CLmax_clean/k_tn^2;
 con.TOP        = TOP;
-con.VS0_kt     = sqrt(2*WS_design/(rho0*msn.CLmax_L))/KT;
+
+CL_land = msn.CLmax_L;
+if nargin >= 5 && ~isempty(CLmax_blown), CL_land = CLmax_blown; end
+
+con.VS0_kt     = sqrt(2*WS_design/(rho0*CL_land))/KT;
 con.VS1_kt     = VS1(WS_design)/KT;
 con.S_land_ft  = 0.5136*con.VS0_kt^2;
 con.W_S        = W_S;

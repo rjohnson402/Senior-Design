@@ -22,14 +22,13 @@ function CL_blown = blow_wind(msn, u_0_kts, lift_cfg)
     b_ref = msn.SPAN;
     AR = msn.AR;
     num_props = msn.NPROP;
-    WFus    = msn.WFus;% fuselage width
 
     e_osw   = msn.e_osw;
     CD0    = msn.CD0;
 
-    prop_diam = (b_ref - WFus) / num_props;
-    A_prop = pi * (prop_diam/2)^2; % value for area property
-    
+    [prop_diam, ~] = AEGAprop(msn, S_ref);
+    A_prop = pi * (prop_diam/2)^2;
+
     CDi_new = CL.^2 ./ (pi * AR * e_osw);
     T_tot = 0.5 .* rho .* u_0.^2 .* S_ref .* (CD0 + CDi_new);
 

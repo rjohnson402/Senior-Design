@@ -58,7 +58,7 @@ Req = (range + reserve/60*Vkt)*NM2FT;       % equivalent still-air distance, ft
 % Design wing loading comes from the constraint diagram. It depends only on
 % the stall and field-length inputs, not on CD0, so it is fixed for the run.
 con   = AEGAconstraint(msn, [], false);
-WSR   = con.WS_design;
+WS0   = con.WS_design;
 CLmax = msn.CLmax_L;                        % carried for the printout only
 DAV      = (WFus + DFus)/2;                                   % Eq. 57
 SWFUS    = pi()*(XL/DAV - 1.7)*DAV^2;                         % Eq. 61
@@ -80,49 +80,9 @@ for i = 1:NMAX
     % no fixed point (smaller wing -> smaller span -> smaller propellers ->
     % higher disc loading -> higher slipstream velocity -> smaller wing).
 
-    % ---- geometry follows from the current weight guess ----------------
-    SW   = DG/WSR;
-    SPAN = sqrt(AR*SW);
-    cr   = 2*SW/(SPAN*(1+TR));                       % root chord
-    MAC  = (2/3)*cr*(1 + TR + TR^2)/(1+TR);          % mean aerodynamic chord
-    SHT  = Vh*MAC*SW/Lh;
-    SVT  = Vv*SPAN*SW/Lv;
-
-    % ---- drag build-up -------------------------------------------------
-    f_wing = Cf_w*FF_w*WETR*(SW - SCOV)*excr;
-    f_tail = Cf_t*FF_t*WETR*(SHT + SVT)*excr;
-    f      = f_wing + f_tail + f_fus + f_msc;
-    CD0    = f/SW;
-
-    % propeller geometry follows the span, it is not an input
-    [Dprop, Adisc] = AEGAprop(msn, SW);
-
-    % ---- installed power from the constraint diagram, at this CD0 ------
-    % P/W depends on W/S, CD0, K and efficiencies, not on DG, so this is a
-    % closed-form call, not a nested loop.
-    con  = AEGAconstraint(msn, CD0, false);
-    PTO  = con.PW_kWkg*DG/LB;                        % takeoff shaft power, kW
-
-    % if msn.use_blown_wind
-    %     WSR = 0.5*rho_SL*(VS0*KT2FPS)^2*msn.CLmax_L;
-    %     for k = 1:20
-    %         SW   = DG/WSR;             SPAN = sqrt(AR*SW);
-    %         cr   = 2*SW/(SPAN*(1+TR)); MAC  = (2/3)*cr*(1+TR+TR^2)/(1+TR);
-    %         SHT  = Vh*MAC*SW/Lh;   SVT  = Vv*SPAN*SW/Lv;
-    %         % ---- drag build-up -------------------------------------------------
-    %         f_wing = Cf_w*FF_w*WETR*(SW - SCOV)*excr;
-    %         f_tail = Cf_t*FF_t*WETR*(SHT + SVT)*excr;
-    %         CD0    = (f_wing + f_tail + f_fus + f_msc)/SW;
-    %         msn.SW = SW;  msn.SPAN = SPAN;  msn.CD0 = CD0;
-    %         CLmax_blown = blow_wind(msn, VS0, 'landing');
-    %         WSRnew = 0.5*rho_SL*(VS0*KT2FPS)^2*CLmax_blown;
-    %         if abs(WSRnew - WSR) < 1e-3, break; end
-    %         WSR = WSRnew;
-    %     end
-    % end
-
+    WSR = WS0;
+    CLmax_blown = msn.CLmax_L;
     if msn.use_blown_wind
-        WSR = 0.5*rho_SL*(VS0*KT2FPS)^2*msn.CLmax_L;
         for k = 1:20
             SW   = DG/WSR;             SPAN = sqrt(AR*SW);
             cr   = 2*SW/(SPAN*(1+TR)); MAC  = (2/3)*cr*(1+TR+TR^2)/(1+TR);
@@ -133,16 +93,31 @@ for i = 1:NMAX
             CD0    = (f_wing + f_tail + f_fus + f_msc)/SW;
             msn.SW = SW;  msn.SPAN = SPAN;  msn.CD0 = CD0;
             CLmax_blown = blow_wind(msn, VS0, 'landing');
-            WSRnew = 0.5*rho_SL*(VS0*KT2FPS)^2*CLmax_blown;
+            WSRnew = WS0*CLmax_blown/msn.CLmax_L;
             if abs(WSRnew - WSR) < 1e-3, break; end
             WSR = WSRnew;
         end
         if k == 20, warning('AEGAsize:blown', 'blown W/S did not converge'); end
-        [Dprop, Adisc] = AEGAprop(msn, SW);             % props on the blown wing
-        con = AEGAconstraint(msn, CD0, false);     % power at blown W/S, CD0
-        PTO = con.PW_kWkg*DG/LB;
+
     end
 
+    
+    % ---- geometry and drag at the final W/S (one place) ----------------
+    SW   = DG/WSR;
+    SPAN = sqrt(AR*SW);
+    cr   = 2*SW/(SPAN*(1+TR));
+    MAC  = (2/3)*cr*(1 + TR + TR^2)/(1+TR);
+    SHT  = Vh*MAC*SW/Lh;
+    SVT  = Vv*SPAN*SW/Lv;
+    f_wing = Cf_w*FF_w*WETR*(SW - SCOV)*excr;
+    f_tail = Cf_t*FF_t*WETR*(SHT + SVT)*excr;
+    f      = f_wing + f_tail + f_fus + f_msc;
+    CD0    = f/SW;
+    [Dprop, Adisc] = AEGAprop(msn, SW);
+
+    % ---- power at THIS W/S, blown or not -------------------------------
+    con = AEGAconstraint(msn, CD0, false, WSR, CLmax_blown);
+    PTO = con.PW_kWkg*DG/LB;
 
     CL     = WSR/q;
     CDi    = CL^2/(pi*AR*e_osw);
@@ -185,7 +160,7 @@ out.MAC        = MAC;
 out.SHT        = SHT;
 out.SVT        = SVT;
 out.WSR        = WSR;
-out.CLmax      = CLmax;
+out.CLmax      = CLmax_blown;
 out.CD0        = CD0;
 out.LD         = LD;
 out.drag       = D;
@@ -219,7 +194,7 @@ if nargout == 0
     fprintf('  Empty weight              %8.0f lb\n', W.empty);
     fprintf('  Battery                   %8.0f lb\n', W.battery);
     fprintf('  Pack energy               %8.1f kWh\n', out.pack_kWh);
-    fprintf('  CLmax (landing)           %8.3f\n', CLmax);
+    fprintf('  CLmax (landing)           %8.3f\n', out.CLmax);
     fprintf('  Wing area                 %8.2f ft^2\n', SW);
     fprintf('  Span                      %8.2f ft\n', SPAN);
     fprintf('  Wing loading              %8.2f lb/ft^2\n', WSR);
