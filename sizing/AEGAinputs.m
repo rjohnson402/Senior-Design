@@ -134,6 +134,7 @@ msn.NPROP   = 8;         % propulsors
 % changes: at the converged span of 33 ft the old 2.43 ft understated disc
 % area by 46 percent, and blow_wind was deriving a different diameter than
 % AEGAsize was using.
+msn.use_blown_wind  = true; % 1 if true, 0 if false
 msn.fill    = 0.90;      % disc diameter / station pitch
 msn.NBLADE  = 5;         % high solidity for blowing, as X-57
 msn.AF      = 130;       % blade activity factor. ESTIMATE - needs the
