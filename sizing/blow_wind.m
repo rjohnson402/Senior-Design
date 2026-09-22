@@ -1,4 +1,4 @@
-function CL_blown = blow_wind(msn, lift_cfg, PTO)
+function CL_blown = blow_wind(msn, DG, lift_cfg, PTO)
     if nargin < 2
         error("please provide msn, flight speed, and flight time to blow_wind function.")
     end
@@ -24,7 +24,7 @@ function CL_blown = blow_wind(msn, lift_cfg, PTO)
             u_0   = u_0_kts .* KT2FPS;
             CL    = msn.CLmax_L;
             CDi   = CL^2/(pi*msn.AR*msn.e_osw);
-            T_tot = 0.5*rho*u_0^2*S_ref*(msn.CD0 + CDi);
+            T_tot = 0.5*rho*u_0^2*S_ref*(msn.CD0 + CDi) - DG*sin(deg2rad(msn.approach_angle));
 
         case 'takeoff'
         if nargin < 3 || isempty(PTO)

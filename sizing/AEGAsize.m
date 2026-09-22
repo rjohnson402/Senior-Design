@@ -94,7 +94,7 @@ for i = 1:NMAX
             f_tail = Cf_t*FF_t*WETR*(SHT + SVT)*excr;
             CD0    = (f_wing + f_tail + f_fus + f_msc)/SW;
             msn.SW = SW;  msn.SPAN = SPAN;  msn.CD0 = CD0;
-            CLmax_L_blown = blow_wind(msn, 'landing');
+            CLmax_L_blown = blow_wind(msn, DG, 'landing');
             
             WSRnew = WS0*CLmax_L_blown/msn.CLmax_L;
             if abs(WSRnew - WSR) < 1e-3, break; end
@@ -121,7 +121,7 @@ for i = 1:NMAX
     % ---- takeoff blowing, on the final geometry -------------------------
     if msn.use_blown_wind
         msn.SW = SW;  msn.SPAN = SPAN;  msn.CD0 = CD0;  msn.WS = WSR;
-        CLmax_TO_blown = blow_wind(msn, 'takeoff', PTO_prev);
+        CLmax_TO_blown = blow_wind(msn, DG, 'takeoff', PTO_prev);
     end
 
     % ---- power at THIS W/S, blown or not -------------------------------

@@ -47,6 +47,7 @@ msn.enforce_land = false; % true: size W/S to landing over 50 ft in S_field
 msn.dV_ne    = 50;       % kt, never-exceed margin over cruise. Equivalent to
                          %   VD = 1.417 VC. Should be a formula tied to the
                          %   ASTM F2245 design speeds, not a constant.
+msn.approach_angle = 3;  % approach_angle is in degrees
 
 %% ===================== TOOLCHAIN CONTROL ============================
 msn.fpow      = 0.50;    % fraction of installed power held at the stall
