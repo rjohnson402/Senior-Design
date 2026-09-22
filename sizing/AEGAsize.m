@@ -81,7 +81,9 @@ for i = 1:NMAX
     % higher disc loading -> higher slipstream velocity -> smaller wing).
 
     WSR = WS0;
-    CLmax_blown = msn.CLmax_L;
+    CLmax_L_blown  = msn.CLmax_L;
+    CLmax_TO_blown = msn.CLmax_TO;
+    PTO_prev       = con.PW_kWkg*DG/LB;       % last pass's power, drives takeoff thrust
     if msn.use_blown_wind
         for k = 1:20
             SW   = DG/WSR;             SPAN = sqrt(AR*SW);
@@ -92,14 +94,15 @@ for i = 1:NMAX
             f_tail = Cf_t*FF_t*WETR*(SHT + SVT)*excr;
             CD0    = (f_wing + f_tail + f_fus + f_msc)/SW;
             msn.SW = SW;  msn.SPAN = SPAN;  msn.CD0 = CD0;
-            CLmax_blown = blow_wind(msn, VS0, 'landing');
-            WSRnew = WS0*CLmax_blown/msn.CLmax_L;
+            CLmax_L_blown = blow_wind(msn, 'landing');
+            
+            WSRnew = WS0*CLmax_L_blown/msn.CLmax_L;
             if abs(WSRnew - WSR) < 1e-3, break; end
             WSR = WSRnew;
         end
         if k == 20, warning('AEGAsize:blown', 'blown W/S did not converge'); end
-
     end
+
 
     
     % ---- geometry and drag at the final W/S (one place) ----------------
@@ -115,8 +118,14 @@ for i = 1:NMAX
     CD0    = f/SW;
     [Dprop, Adisc] = AEGAprop(msn, SW);
 
+    % ---- takeoff blowing, on the final geometry -------------------------
+    if msn.use_blown_wind
+        msn.SW = SW;  msn.SPAN = SPAN;  msn.CD0 = CD0;  msn.WS = WSR;
+        CLmax_TO_blown = blow_wind(msn, 'takeoff', PTO_prev);
+    end
+
     % ---- power at THIS W/S, blown or not -------------------------------
-    con = AEGAconstraint(msn, CD0, false, WSR, CLmax_blown);
+    con = AEGAconstraint(msn, CD0, false, WSR, CLmax_L_blown, CLmax_TO_blown);
     PTO = con.PW_kWkg*DG/LB;
 
     CL     = WSR/q;
@@ -150,7 +159,6 @@ for i = 1:NMAX
         DG = hist(i,1) - r1*(hist(i,1) - hist(i-1,1))/(r1 - r0);
     end
 end
-
 %% ======================= RESULTS =======================================
 out.MTOW       = DGout;
 out.W          = W;
@@ -160,7 +168,8 @@ out.MAC        = MAC;
 out.SHT        = SHT;
 out.SVT        = SVT;
 out.WSR        = WSR;
-out.CLmax      = CLmax_blown;
+out.CLmax      = CLmax_L_blown;
+out.CLmax_TO   = CLmax_TO_blown;
 out.CD0        = CD0;
 out.LD         = LD;
 out.drag       = D;
@@ -185,7 +194,7 @@ out.history    = hist(1:i,:);
 out.converged  = abs(hist(i,2) - hist(i,1)) < TOL;
 out.msn        = msn;    % the inputs travel with the answer. save('run.mat',
                          % 'out') now reproduces this result exactly.
-
+AEGAconstraint(out.msn, out.CD0, true, out.WSR, out.CLmax, out.CLmax_TO)
 %% ======================= PRINTOUT ======================================
 if nargout == 0
     fprintf('\n  SIZING RESULT   (%d passes, converged = %d)\n', i, out.converged);
@@ -195,6 +204,7 @@ if nargout == 0
     fprintf('  Battery                   %8.0f lb\n', W.battery);
     fprintf('  Pack energy               %8.1f kWh\n', out.pack_kWh);
     fprintf('  CLmax (landing)           %8.3f\n', out.CLmax);
+    fprintf('  CLmax (takeoff)           %8.3f\n', out.CLmax_TO);
     fprintf('  Wing area                 %8.2f ft^2\n', SW);
     fprintf('  Span                      %8.2f ft\n', SPAN);
     fprintf('  Wing loading              %8.2f lb/ft^2\n', WSR);

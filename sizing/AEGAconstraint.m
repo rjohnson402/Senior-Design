@@ -1,4 +1,4 @@
-function con = AEGAconstraint(msn, CD0, doplot, WS_override, CLmax_blown)
+function con = AEGAconstraint(msn, CD0, doplot, WS_override, CLmax_L_blown, CLmax_TO_blown)
 %AEGACONSTRAINT  Constraint diagram for the AEGA, 14 CFR Part 22 / ASTM F2245.
 %
 %   con = AEGAconstraint(msn, CD0, doplot)
@@ -69,19 +69,23 @@ sigma = 1.0;               % sea level ISA
 S_TO  = msn.S_field;       % ft, takeoff over 50 ft
 S_L   = msn.S_field;       % ft, landing over 50 ft, same field
 
-W_S = linspace(4, 30, 261);    % lb/ft^2, plotting grid only
+W_S = linspace(4, 40, 261);    % lb/ft^2, plotting grid only
 
+CL_land = msn.CLmax_L;
+if nargin >= 5 && ~isempty(CLmax_L_blown),  CL_land = CLmax_L_blown;  end
+CL_TO = msn.CLmax_TO;
+if nargin >= 6 && ~isempty(CLmax_TO_blown), CL_TO = CLmax_TO_blown; end
 %% ======================= WING LOADING LIMITS (vertical lines) ==========
 % 1. Light-sport CERTIFICATION: VS0 <= 61 KCAS, landing configuration, idle
 %    power (MOSAIC, 14 CFR Part 22). The team designs to 60. Always enforced.
-lim.VS0  = 0.5*rho0*(msn.VS0*KT)^2*msn.CLmax_L;
+lim.VS0  = 0.5*rho0*(msn.VS0*KT)^2*CL_land;
 % 2. Sport-pilot OPERATION: VS1 <= 59 KCAS, clean (14 CFR 61.316). Not a
 %    certification limit. Enforce only if the trainer must be flyable by
 %    sport pilots.
 lim.VS1  = 0.5*rho0*(msn.VS1_op*KT)^2*msn.CLmax_clean;
 % 3. Landing distance over 50 ft, wheel brakes only.
 VSL_max  = sqrt(S_L/0.5136);                               % KCAS
-lim.land = 0.5*rho0*(VSL_max*KT)^2*msn.CLmax_L;
+lim.land = 0.5*rho0*(VSL_max*KT)^2*CL_land;
 
 WS_margin = 0.98;
 WS_design = lim.VS0*WS_margin;   set_by = 'VS0 certification';
@@ -91,6 +95,8 @@ end
 if msn.enforce_land && lim.land < WS_design
     WS_design = lim.land;  set_by = 'landing distance';
 end
+if nargin >= 4 && ~isempty(WS_override), WS_design = WS_override; set_by = 'blown wing'; end
+
 if nargin >= 4 && ~isempty(WS_override), WS_design = WS_override; set_by = 'blown wing'; end
 
 %% ======================= POWER LOADING CONSTRAINTS =====================
@@ -109,7 +115,7 @@ TOP  = (-4.9 + sqrt(4.9^2 + 4*0.009*S_TO/1.66))/(2*0.009);
 f.cruise  = @(WS) PW(WS, V_cr, 1, 0, eta_cr, rho_cr);
 f.climb   = @(WS) PW(WS, k_cl*VS1(WS), 1, ROC_fpm/60, eta_cl, rho0);
 f.turn    = @(WS) PW(WS, k_tn*sqrt(n_turn)*VS1(WS), n_turn, 0, eta_cr, rho0);
-f.takeoff = @(WS) WS/(sigma*msn.CLmax_TO*TOP);
+f.takeoff = @(WS) WS/(sigma*CL_TO*TOP);
 
 names  = {'cruise','climb','turn','takeoff'};
 curves = zeros(numel(names), numel(W_S));
@@ -139,10 +145,6 @@ con.CL_climb   = msn.CLmax_clean/k_cl^2;
 con.V_turn_kt  = k_tn*sqrt(n_turn)*VS1(WS_design)/KT;
 con.CL_turn    = msn.CLmax_clean/k_tn^2;
 con.TOP        = TOP;
-
-CL_land = msn.CLmax_L;
-if nargin >= 5 && ~isempty(CLmax_blown), CL_land = CLmax_blown; end
-
 con.VS0_kt     = sqrt(2*WS_design/(rho0*CL_land))/KT;
 con.VS1_kt     = VS1(WS_design)/KT;
 con.S_land_ft  = 0.5136*con.VS0_kt^2;
@@ -191,7 +193,7 @@ if doplot
     ylabel('Power loading, P/W (hp/lb)','FontSize',12,'FontWeight','bold');
     title('AEGA constraint diagram, 14 CFR Part 22', ...
           'FontSize',14,'FontWeight','bold');
-    axis([4 30 yl]);
+    axis([4 40 yl]);
     lg = legend('Location','northwest');
     set(lg, 'FontSize', 9);
 end
