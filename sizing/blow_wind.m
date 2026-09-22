@@ -1,7 +1,7 @@
 function CL_blown = blow_wind(msn, DG, lift_cfg, PTO)
-    if nargin < 2
-        error("please provide msn, flight speed, and flight time to blow_wind function.")
-    end
+    if nargin < 3
+    error('blow_wind:inputs', 'Provide msn, DG, and lift_cfg.');
+end
 
     % Conversions
     KT2FPS   = 1.688;
@@ -21,13 +21,30 @@ function CL_blown = blow_wind(msn, DG, lift_cfg, PTO)
 
     switch lift_cfg
         case 'landing'
-            u_0   = u_0_kts .* KT2FPS;
-            CL    = msn.CLmax_L;
-            CDi   = CL^2/(pi*msn.AR*msn.e_osw);
-            T_tot = 0.5*rho*u_0^2*S_ref*(msn.CD0 + CDi) - DG*sin(deg2rad(msn.approach_angle));
-
+            u_0 = u_0_kts .* KT2FPS;
+            CL  = msn.CLmax_L;
+        
+            % Induced drag at the landing lift coefficient.
+            CDi = CL^2/(pi*msn.AR*msn.e_osw);
+        
+            % Landing drag includes clean aircraft drag, induced drag, and
+            % additional drag from the highly deflected landing flaps.
+            CD_land = msn.CD0 + CDi + msn.dCD_flap_L;
+        
+            D_land = 0.5*rho*u_0^2*S_ref*CD_land;
+        
+            % Thrust required to maintain the specified steady descent angle.
+            %
+            % T = D - W*sin(gamma)
+            %
+            % More flap drag therefore requires more propeller thrust, which also
+            % increases slipstream velocity and powered lift during approach.
+            T_tot = D_land - DG*sind(msn.approach_angle);
+        
+            % Do not allow reverse thrust while still airborne.
+            T_tot = max(T_tot, 0);
         case 'takeoff'
-        if nargin < 3 || isempty(PTO)
+        if nargin < 4 || isempty(PTO)
             error('blow_wind:PTO', 'takeoff needs installed shaft power PTO, kW');
         end
             CL    = msn.CLmax_TO;

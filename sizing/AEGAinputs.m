@@ -49,12 +49,7 @@ msn.dV_ne    = 50;       % kt, never-exceed margin over cruise. Equivalent to
                          %   ASTM F2245 design speeds, not a constant.
 msn.approach_angle = 3;  % approach_angle is in degrees
 
-%% ===================== TOOLCHAIN CONTROL ============================
-msn.fpow      = 0.50;    % fraction of installed power held at the stall
-                         %   condition in blow_wind. The certification test
-                         %   is at IDLE power; even assuming the rule changes,
-                         %   the case that matters is approach, not full
-                         %   takeoff power. Do not set this to 1 and quote it.
+
 msn.CLmax_cap = 4.0;     % hard cap on the blown CLmax. A STATED ASSUMPTION,
                          %   not a computed result. The dynamic-pressure
                          %   blend has no upper bound and knows nothing about
@@ -69,13 +64,81 @@ msn.nu_cr    = msn.mu_cr/msn.rho_cr;   % KINEMATIC viscosity, ft^2/s
 msn.g0       = 32.174;           % ft/s^2
 
 %% ===================== AERODYNAMIC COEFFICIENTS =====================
-msn.CLmax_clean = 1.6;   % NO SOURCE. Drives the VS1 sport-pilot check.
-msn.CLmax_TO    = 2.1;   % NO SOURCE. Input, not a flap calculation.
-msn.CLmax_L     = 2.1;   % NO SOURCE. Landing config, IDLE POWER per
-                         %   14 CFR 23.2110 / ASTM F2245. Blown-wing credit
-                         %   is an assumed rule change, not current law.
-msn.e_osw       = 0.80;  % Oswald factor. Constraint script previously used
-                         %   0.70; they must agree.
+
+msn.CLmax_clean = 1.6;
+
+% --------------------- Landing flaps ---------------------------------
+% Preliminary large single-slotted flap geometry.
+% Flaps extend from near the fuselage to about 80% of each semispan.
+% About 69% of the wing planform lies within the flapped span.
+msn.flap_chord_frac = 0.32;    % flap chord / local wing chord
+msn.flap_area_frac  = 0.69;    % flapped wing planform area / total wing area
+msn.flap_def_L      = 40;      % landing flap deflection, deg
+
+% Approximate section CLmax increase from the landing flap.
+% Roskam-style finite-wing correction:
+%
+% Delta CLmax = Delta clmax * (S_wf/S) * K_sweep
+%
+% This gives approximately:
+% Delta CLmax = 1.40 * 0.69 * 0.92 = 0.89
+msn.dclmax_flap_L = 1.40;
+msn.K_flap_sweep  = 0.92;
+
+msn.dCLmax_L_flap = msn.dclmax_flap_L ...
+                   * msn.flap_area_frac ...
+                   * msn.K_flap_sweep;
+
+% Unblown landing CLmax.
+% Propeller blowing is added later by blow_wind().
+msn.CLmax_L = msn.CLmax_clean + msn.dCLmax_L_flap;
+
+% Leave takeoff value unchanged for now.
+msn.CLmax_TO = 2.1;
+
+% --------------------- Landing flap drag ------------------------------
+% Actual movable flap area is approximately:
+%
+% S_flap/S = (flap chord fraction)*(flapped wing area fraction)
+%
+%          = 0.32 * 0.69
+%          = 0.221
+%
+% For preliminary sizing, model the highly deflected flap approximately
+% as a plate exposed to the flow. The sin^2(delta) term represents the
+% increasing projected area as the flap is deflected.
+%
+% This is a rough conceptual-design drag model, not a final CFD result.
+msn.CD_flap_factor = 1.10;
+
+msn.dCD_flap_L = msn.CD_flap_factor ...
+                * msn.flap_chord_frac ...
+                * msn.flap_area_frac ...
+                * sind(msn.flap_def_L)^2;
+
+% Current estimate gives Delta CD_flap approximately 0.10.
+
+% --------------------- Landing ground roll ----------------------------
+% Touchdown speed relative to stall speed.
+msn.VTD_factor = 1.15;
+
+% Effective tire/brake friction coefficient on dry pavement.
+msn.mu_brake = 0.35;
+
+% Reverse thrust after touchdown expressed as a fraction of aircraft weight.
+%
+% T_reverse = reverse_TW * W
+%
+% 0.08 corresponds to about 208 lbf of reverse thrust for a 2600 lb aircraft.
+% This is only a preliminary assumption until reverse propeller performance
+% is modeled explicitly.
+msn.reverse_TW = 0.08;
+
+% After touchdown the aircraft is de-rotated, so the wing does not remain
+% at CLmax. Assume ground-roll CL is 50% of the unblown landing CLmax.
+msn.CL_ground_frac = 0.50;
+
+msn.e_osw = 0.80;
 
 %% ===================== WING =========================================
 msn.AR     = 9;          % LOW for torsional stiffness with leading-edge
@@ -157,7 +220,7 @@ msn.etap_cl = 0.65;      % propeller efficiency in CLIMB and TAKEOFF. A prop
                          %   was making AEGAconstraint return 0.085 kW/kg,
                          %   below both the Velis Electro and the 172S.
 msn.etap_cr = 0.84;      % propeller efficiency in CRUISE and TURN
-msn.PWkWkg  = 0.110;     % takeoff power loading, kW per kg. FROM
+%msn.PWkWkg  = 0.110;     % takeoff power loading, kW per kg. FROM
                          %   AEGAconstraint with the corrected climb
                          %   efficiency; climb governs. Was hardcoded at
                          %   0.176 inside AEGAsize, which was 60 percent high.

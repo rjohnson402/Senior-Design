@@ -84,9 +84,76 @@ lim.VS0  = 0.5*rho0*(msn.VS0*KT)^2*CL_land;
 %    sport pilots.
 lim.VS1  = 0.5*rho0*(msn.VS1_op*KT)^2*msn.CLmax_clean;
 % 3. Landing distance over 50 ft, wheel brakes only.
-VSL_max  = sqrt(S_L/0.5136);                               % KCAS
-lim.land = 0.5*rho0*(VSL_max*KT)^2*CL_land;
+% 3. Landing distance over 50 ft.
+%
+% Landing is split into:
+%
+%   S_land = S_air + S_ground
+%
+% S_air is the distance from the 50 ft obstacle to touchdown along the
+% specified approach angle.
+%
+% S_ground is calculated from braking, aerodynamic drag, and reverse
+% propeller thrust after touchdown.
 
+WS_land = linspace(4, 40, 500);
+S_land_calc = zeros(size(WS_land));
+
+for j = 1:numel(WS_land)
+
+    WSj = WS_land(j);
+
+    % Powered landing stall speed.
+    VS = sqrt(2*WSj/(rho0*CL_land));
+
+    % Touchdown speed.
+    VTD = msn.VTD_factor*VS;
+
+    % Distance from 50 ft obstacle to touchdown.
+    S_air = 50/tand(msn.approach_angle);
+
+    % Velocity grid during ground roll.
+    Vg = linspace(0, VTD, 200);
+
+    qg = 0.5*rho0.*Vg.^2;
+
+    % After touchdown, assume angle of attack is reduced substantially.
+    % Use the UNBLOWN flapped-wing CL because reverse thrust begins after
+    % touchdown and the normal powered-lift condition no longer applies.
+    CL_ground = msn.CL_ground_frac*msn.CLmax_L;
+
+    % Ground-roll aerodynamic drag.
+    CDi_ground = K1*CL_ground^2;
+    CD_ground  = CD0 + msn.dCD_flap_L + CDi_ground;
+
+    % Lift and drag expressed as fractions of aircraft weight.
+    L_W = qg*CL_ground/WSj;
+    D_W = qg*CD_ground/WSj;
+
+    % Braking only acts through the weight remaining on the wheels.
+    N_W = max(1 - L_W, 0);
+
+    % Total deceleration:
+    %
+    % a/g = tire braking + aerodynamic drag + reverse thrust
+    a = msn.g0*(msn.mu_brake*N_W ...
+              + D_W ...
+              + msn.reverse_TW);
+
+    % Integrate ds = V/a dV from touchdown to zero speed.
+    S_ground = trapz(Vg, Vg./max(a, 1e-6));
+
+    S_land_calc(j) = S_air + S_ground;
+end
+
+% Maximum wing loading that still satisfies the required landing distance.
+valid = find(S_land_calc <= S_L);
+
+if isempty(valid)
+    lim.land = WS_land(1);
+else
+    lim.land = WS_land(valid(end));
+end
 WS_margin = 0.98;
 WS_design = lim.VS0*WS_margin;   set_by = 'VS0 certification';
 if msn.enforce_VS1  && lim.VS1  < WS_design
@@ -97,7 +164,6 @@ if msn.enforce_land && lim.land < WS_design
 end
 if nargin >= 4 && ~isempty(WS_override), WS_design = WS_override; set_by = 'blown wing'; end
 
-if nargin >= 4 && ~isempty(WS_override), WS_design = WS_override; set_by = 'blown wing'; end
 
 %% ======================= POWER LOADING CONSTRAINTS =====================
 % Mattingly, beta = alpha = 1:
@@ -147,8 +213,8 @@ con.CL_turn    = msn.CLmax_clean/k_tn^2;
 con.TOP        = TOP;
 con.VS0_kt     = sqrt(2*WS_design/(rho0*CL_land))/KT;
 con.VS1_kt     = VS1(WS_design)/KT;
-con.S_land_ft  = 0.5136*con.VS0_kt^2;
-con.W_S        = W_S;
+con.S_land_ft = interp1(WS_land, S_land_calc, ...
+                        WS_design, 'linear', 'extrap');con.W_S        = W_S;
 con.PW_cruise  = curves(1,:);
 con.PW_climb   = curves(2,:);
 con.PW_turn    = curves(3,:);
