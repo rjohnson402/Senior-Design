@@ -81,34 +81,18 @@ for i = 1:NMAX
     % higher disc loading -> higher slipstream velocity -> smaller wing).
 
     % ---- geometry follows from the current weight guess ----------------
-    if msn.use_blown_wind
-        WSR = 0.5*rho_SL*(VS0*KT2FPS)^2*CLmax;
-        for k = 1:20
-            SW   = DG/WSR;             SPAN = sqrt(AR*SW);
-            cr   = 2*SW/(SPAN*(1+TR)); MAC  = (2/3)*cr*(1+TR+TR^2)/(1+TR);
-            SHT  = Vh*MAC*SW/Lh;   SVT  = Vv*SPAN*SW/Lv;
-            % ---- drag build-up -------------------------------------------------
-            f_wing = Cf_w*FF_w*WETR*(SW - SCOV)*excr;
-            f_tail = Cf_t*FF_t*WETR*(SHT + SVT)*excr;
-            CD0    = (f_wing + f_tail + f_fus + f_msc)/SW;
-            msn.SW = SW;  msn.SPAN = SPAN;  msn.CD0 = CD0;
-            WSRnew = 0.5*rho_SL*(VS0*KT2FPS)^2*blow_wind(msn, VS0, 'landing');
-            if abs(WSRnew - WSR) < 1e-3, break; end
-            WSR = WSRnew;
-        end
-    else
-        SW   = DG/WSR;
-        SPAN = sqrt(AR*SW);
-        cr   = 2*SW/(SPAN*(1+TR));                       % root chord
-        MAC  = (2/3)*cr*(1 + TR + TR^2)/(1+TR);          % mean aerodynamic chord
-        SHT  = Vh*MAC*SW/Lh;
-        SVT  = Vv*SPAN*SW/Lv;
-        % ---- drag build-up -------------------------------------------------
-        f_wing = Cf_w*FF_w*WETR*(SW - SCOV)*excr;
-        f_tail = Cf_t*FF_t*WETR*(SHT + SVT)*excr;
-        f      = f_wing + f_tail + f_fus + f_msc;
-        CD0    = f/SW;
-    end
+    SW   = DG/WSR;
+    SPAN = sqrt(AR*SW);
+    cr   = 2*SW/(SPAN*(1+TR));                       % root chord
+    MAC  = (2/3)*cr*(1 + TR + TR^2)/(1+TR);          % mean aerodynamic chord
+    SHT  = Vh*MAC*SW/Lh;
+    SVT  = Vv*SPAN*SW/Lv;
+
+    % ---- drag build-up -------------------------------------------------
+    f_wing = Cf_w*FF_w*WETR*(SW - SCOV)*excr;
+    f_tail = Cf_t*FF_t*WETR*(SHT + SVT)*excr;
+    f      = f_wing + f_tail + f_fus + f_msc;
+    CD0    = f/SW;
 
     % propeller geometry follows the span, it is not an input
     [Dprop, Adisc] = AEGAprop(msn, SW);
@@ -118,14 +102,54 @@ for i = 1:NMAX
     % closed-form call, not a nested loop.
     con  = AEGAconstraint(msn, CD0, false);
     PTO  = con.PW_kWkg*DG/LB;                        % takeoff shaft power, kW
+
+    % if msn.use_blown_wind
+    %     WSR = 0.5*rho_SL*(VS0*KT2FPS)^2*msn.CLmax_L;
+    %     for k = 1:20
+    %         SW   = DG/WSR;             SPAN = sqrt(AR*SW);
+    %         cr   = 2*SW/(SPAN*(1+TR)); MAC  = (2/3)*cr*(1+TR+TR^2)/(1+TR);
+    %         SHT  = Vh*MAC*SW/Lh;   SVT  = Vv*SPAN*SW/Lv;
+    %         % ---- drag build-up -------------------------------------------------
+    %         f_wing = Cf_w*FF_w*WETR*(SW - SCOV)*excr;
+    %         f_tail = Cf_t*FF_t*WETR*(SHT + SVT)*excr;
+    %         CD0    = (f_wing + f_tail + f_fus + f_msc)/SW;
+    %         msn.SW = SW;  msn.SPAN = SPAN;  msn.CD0 = CD0;
+    %         CLmax_blown = blow_wind(msn, VS0, 'landing');
+    %         WSRnew = 0.5*rho_SL*(VS0*KT2FPS)^2*CLmax_blown;
+    %         if abs(WSRnew - WSR) < 1e-3, break; end
+    %         WSR = WSRnew;
+    %     end
+    % end
+
+    if msn.use_blown_wind
+        WSR = 0.5*rho_SL*(VS0*KT2FPS)^2*msn.CLmax_L;
+        for k = 1:20
+            SW   = DG/WSR;             SPAN = sqrt(AR*SW);
+            cr   = 2*SW/(SPAN*(1+TR)); MAC  = (2/3)*cr*(1+TR+TR^2)/(1+TR);
+            SHT  = Vh*MAC*SW/Lh;   SVT  = Vv*SPAN*SW/Lv;
+            % ---- drag build-up -------------------------------------------------
+            f_wing = Cf_w*FF_w*WETR*(SW - SCOV)*excr;
+            f_tail = Cf_t*FF_t*WETR*(SHT + SVT)*excr;
+            CD0    = (f_wing + f_tail + f_fus + f_msc)/SW;
+            msn.SW = SW;  msn.SPAN = SPAN;  msn.CD0 = CD0;
+            CLmax_blown = blow_wind(msn, VS0, 'landing');
+            WSRnew = 0.5*rho_SL*(VS0*KT2FPS)^2*CLmax_blown;
+            if abs(WSRnew - WSR) < 1e-3, break; end
+            WSR = WSRnew;
+        end
+        if k == 20, warning('AEGAsize:blown', 'blown W/S did not converge'); end
+        [Dprop, Adisc] = AEGAprop(msn, SW);             % props on the blown wing
+        con = AEGAconstraint(msn, CD0, false);     % power at blown W/S, CD0
+        PTO = con.PW_kWkg*DG/LB;
+    end
+
+
     CL     = WSR/q;
     CDi    = CL^2/(pi*AR*e_osw);
     LD     = CL/(CD0 + CDi);
 
     D      = DG/LD;                                  % cruise drag = thrust
-    aero_info.CL = CL;
-    aero_info.D = D;
-    % ---- propulsive efficiency from disc loading -----------------------\
+    % ---- propulsive efficiency from disc loading -----------------------
     CT   = D/(q*Adisc);
     etap = 2/(1 + sqrt(1 + CT))*prof;
     eta  = eta_m*eta_pe*etap;
