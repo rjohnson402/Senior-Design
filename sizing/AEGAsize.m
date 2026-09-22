@@ -81,8 +81,8 @@ for i = 1:NMAX
     % higher disc loading -> higher slipstream velocity -> smaller wing).
 
     % ---- geometry follows from the current weight guess ----------------
-    WSR  = 0.5*rho_SL*(VS0*KT2FPS)^2*CLmax;   % wing loading from stall
     if msn.use_blown_wind
+        WSR = 0.5*rho_SL*(VS0*KT2FPS)^2*CLmax;
         for k = 1:20
             SW   = DG/WSR;             SPAN = sqrt(AR*SW);
             cr   = 2*SW/(SPAN*(1+TR)); MAC  = (2/3)*cr*(1+TR+TR^2)/(1+TR);
@@ -119,7 +119,6 @@ for i = 1:NMAX
     con  = AEGAconstraint(msn, CD0, false);
     PTO  = con.PW_kWkg*DG/LB;                        % takeoff shaft power, kW
     CL     = WSR/q;
-    msn.CL_cruise = CL;
     CDi    = CL^2/(pi*AR*e_osw);
     LD     = CL/(CD0 + CDi);
 
@@ -127,9 +126,6 @@ for i = 1:NMAX
     aero_info.CL = CL;
     aero_info.D = D;
     % ---- propulsive efficiency from disc loading -----------------------\
-    prop_diam = (SPAN - WFus) / NPROP;
-    Adisc = NPROP * pi * (prop_diam/2)^2; % value for area property
-
     CT   = D/(q*Adisc);
     etap = 2/(1 + sqrt(1 + CT))*prof;
     eta  = eta_m*eta_pe*etap;
