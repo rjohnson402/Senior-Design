@@ -96,64 +96,22 @@ lim.VS1  = 0.5*rho0*(msn.VS1_op*KT)^2*msn.CLmax_clean;
 % S_ground is calculated from braking, aerodynamic drag, and reverse
 % propeller thrust after touchdown.
 
-WS_land = linspace(4, 40, 500);
-S_land_calc = zeros(size(WS_land));
-
-for j = 1:numel(WS_land)
-
-    WSj = WS_land(j);
-
-    % Powered landing stall speed.
-    VS = sqrt(2*WSj/(rho0*CL_land));
-
-    % Touchdown speed.
-    VTD = msn.VTD_factor*VS;
-
-    % Distance from 50 ft obstacle to touchdown.
-    S_air = 50/tand(msn.approach_angle);
-
-    % Velocity grid during ground roll.
-    Vg = linspace(0, VTD, 200);
-
-    qg = 0.5*rho0.*Vg.^2;
-
-    % After touchdown, assume angle of attack is reduced substantially.
-    % Use the UNBLOWN flapped-wing CL because reverse thrust begins after
-    % touchdown and the normal powered-lift condition no longer applies.
-    CL_ground = msn.CL_ground_frac*msn.CLmax_L;
-
-    % Ground-roll aerodynamic drag.
-    CDi_ground = K1*CL_ground^2;
-    CD_ground  = CD0 + msn.dCD_flap_L + CDi_ground;
-
-    % Lift and drag expressed as fractions of aircraft weight.
-    L_W = qg*CL_ground/WSj;
-    D_W = qg*CD_ground/WSj;
-
-    % Braking only acts through the weight remaining on the wheels.
-    N_W = max(1 - L_W, 0);
-
-    % Total deceleration:
-    %
-    % a/g = tire braking + aerodynamic drag + reverse thrust
-    a = msn.g0*(msn.mu_brake*N_W ...
-              + D_W ...
-              + msn.reverse_TW);
-
-    % Integrate ds = V/a dV from touchdown to zero speed.
-    S_ground = trapz(Vg, Vg./max(a, 1e-6));
-
-    S_land_calc(j) = S_air + S_ground;
+% At a fixed fraction of touchdown speed, L/W, D/W, and deceleration
+% are independent of W/S in this model. Ground roll is proportional to
+% W/S, so its limit can be solved without an arbitrary search ceiling.
+S_air = 50/tand(msn.approach_angle);
+ground_per_WS = landing_ground_distance(msn,CD0,CL_land,1);
+if ~isfinite(S_air) || S_air < 0 || ...
+        ~isfinite(ground_per_WS) || ground_per_WS <= 0
+    error('AEGAconstraint:landingModel','Invalid landing-model inputs.');
+end
+lim.land = max(0,(S_L - S_air)/ground_per_WS);
+if msn.enforce_land && lim.land <= 0
+    error('AEGAconstraint:landingInfeasible', ...
+        'Field length %.1f ft cannot accommodate the %.1f ft airborne segment plus ground roll.', ...
+        S_L,S_air);
 end
 
-% Maximum wing loading that still satisfies the required landing distance.
-valid = find(S_land_calc <= S_L);
-
-if isempty(valid)
-    lim.land = WS_land(1);
-else
-    lim.land = WS_land(valid(end));
-end
 WS_margin = 0.98;
 WS_design = lim.VS0*WS_margin;   set_by = 'VS0 certification';
 if msn.enforce_VS1  && lim.VS1  < WS_design
@@ -208,13 +166,15 @@ for k = 1:numel(names)
 end
 con.V_climb_kt = k_cl*VS1(WS_design)/KT;
 con.CL_climb   = msn.CLmax_clean/k_cl^2;
+con.ROC_fpm = ROC_fpm;
 con.V_turn_kt  = k_tn*sqrt(n_turn)*VS1(WS_design)/KT;
 con.CL_turn    = msn.CLmax_clean/k_tn^2;
 con.TOP        = TOP;
 con.VS0_kt     = sqrt(2*WS_design/(rho0*CL_land))/KT;
 con.VS1_kt     = VS1(WS_design)/KT;
-con.S_land_ft = interp1(WS_land, S_land_calc, ...
-                        WS_design, 'linear', 'extrap');con.W_S        = W_S;
+con.S_land_ft = S_air + landing_ground_distance(msn,CD0,CL_land,WS_design);
+con.landing_ok = con.S_land_ft <= S_L*(1 + 1e-9);
+con.W_S = W_S;
 con.PW_cruise  = curves(1,:);
 con.PW_climb   = curves(2,:);
 con.PW_turn    = curves(3,:);
@@ -228,7 +188,7 @@ if WS_design > lim.VS1*(1 + 1e-9)
     viol{end+1} = sprintf('VS1 clean = %.1f kt, sport-pilot limit %d KCAS', ...
                           con.VS1_kt, msn.VS1_op);
 end
-if WS_design > lim.land*(1 + 1e-9)
+if ~con.landing_ok
     viol{end+1} = sprintf('landing = %.0f ft over 50 ft, field %d ft', ...
                           con.S_land_ft, S_L);
 end
@@ -247,18 +207,18 @@ if doplot
          sprintf('Level turn (%.1fg @ %.1f x turn stall)', n_turn, k_tn));
     plot(W_S, con.PW_takeoff, 'g-.', 'LineWidth',2, 'DisplayName', ...
          sprintf('Takeoff (%d ft over 50 ft)', S_TO));
-    plot(lim.VS0*[1 1],  yl, 'k-',  'LineWidth',2, 'DisplayName', ...
+    plot(lim.VS0*[1 1],  yl, 'y-',  'LineWidth',2, 'DisplayName', ...
          sprintf('VS0 %d KCAS, certification (%.1f psf)', msn.VS0, lim.VS0));
     % plot(lim.VS1*[1 1],  yl, 'k:',  'LineWidth',2, 'DisplayName', ...
     %      sprintf('VS1 %d KCAS, sport pilot (%.1f psf)', msn.VS1_op, lim.VS1));
-    plot(lim.land*[1 1], yl, 'k--', 'LineWidth',2, 'DisplayName', ...
+    plot(lim.land*[1 1], yl, 'c--', 'LineWidth',2, 'DisplayName', ...
          sprintf('Landing %d ft over 50 ft (%.1f psf)', S_L, lim.land));
     plot(WS_design, PW_req, 'ko', 'MarkerSize',10, ...
          'MarkerFaceColor','y', 'DisplayName','Design point');
-    xlabel('Wing loading, W/S (lb/ft^2)','FontSize',12,'FontWeight','bold');
-    ylabel('Power loading, P/W (hp/lb)','FontSize',12,'FontWeight','bold');
+    xlabel('Wing loading, W/S (lb/ft^2)','FontSize',12,'FontWeight','bold', 'Color','k');
+    ylabel('Power loading, P/W (hp/lb)','FontSize',12,'FontWeight','bold', 'Color','k');
     title('AEGA constraint diagram, 14 CFR Part 22', ...
-          'FontSize',14,'FontWeight','bold');
+          'FontSize',14,'FontWeight','bold', 'Color','k');
     axis([4 40 yl]);
     lg = legend('Location','northwest');
     set(lg, 'FontSize', 9);
@@ -294,4 +254,19 @@ if nargout == 0
     fprintf('\n');
     clear con
 end
+end
+function S_ground = landing_ground_distance(msn,CD0,CL_land,WS)
+% Evaluate the original ground-roll model at the requested wing loading.
+validateattributes(WS,{'numeric'},{'scalar','real','finite','positive'});
+VTD = msn.VTD_factor*sqrt(2*WS/(msn.rho_SL*CL_land));
+Vg = linspace(0,VTD,200);
+qg = 0.5*msn.rho_SL.*Vg.^2;
+CL_ground = msn.CL_ground_frac*msn.CLmax_L;
+CD_ground = CD0 + msn.dCD_flap_L ...
+    + CL_ground^2/(pi*msn.AR*msn.e_osw);
+L_W = qg*CL_ground/WS;
+D_W = qg*CD_ground/WS;
+N_W = max(1 - L_W,0);
+a = msn.g0*(msn.mu_brake*N_W + D_W + msn.reverse_TW);
+S_ground = trapz(Vg,Vg./max(a,1e-6));
 end

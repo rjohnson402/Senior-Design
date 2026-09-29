@@ -133,7 +133,13 @@ msn.mu_brake = 0.35;
 % This is only a preliminary assumption until reverse propeller performance
 % is modeled explicitly.
 msn.reverse_TW = 0.08;
-
+% private-pilot solo cross-country sizing mission
+% three legs give 150 nm total with three full-stop landings
+% the first leg is greater than 50 nm
+msn.enforce_ppl_xc = true;
+msn.ppl_xc_leg_nm = [60 45 45];
+msn.ppl_xc_takeoff_min = 1.0;
+msn.ppl_xc_climb_alt_ft = 5000;
 % After touchdown the aircraft is de-rotated, so the wing does not remain
 % at CLmax. Assume ground-roll CL is 50% of the unblown landing CLmax.
 msn.CL_ground_frac = 0.50;
@@ -141,20 +147,13 @@ msn.CL_ground_frac = 0.50;
 msn.e_osw = 0.80;
 
 %% ===================== WING =========================================
-msn.AR     = 9;          % LOW for torsional stiffness with leading-edge
-                         %   propulsors (whirl flutter). GJ scales roughly as
-                         %   chord^4, so AR 8 is about 3x stiffer than AR 14.
-                         %   COST: 258 lb at MTOW (2744 vs 2486) and 3.3
-                         %   points of cruise L/D. The stiffness argument was
-                         %   made when the wing was 79 ft^2 with a 25 ft span;
-                         %   it is now ~107 ft^2 with 4.1 ft of chord, which
-                         %   may already be stiffer than needed. YOUR CALL -
-                         %   left at 8 deliberately, not overwritten.
-msn.TR     = 0.45;       % FLOPS general aviation default, Table 1
-msn.SWEEP  = 2;          % QUARTER-CHORD sweep, deg (FLOPS Eq. 14 wants c/4)
-msn.TCA    = 0.15;       % NO SOURCE. Needs a named airfoil from aero.
-msn.FCOMP  = 0.9;        % composite fraction, 0 metal to 1 all carbon
-msn.FLAPR  = 0.333;      % movable surface area / wing area, FLOPS default
+msn.AR = 9;
+msn.TR = 0.35;
+msn.SWEEP = 2;
+msn.TCA = 0.15;
+msn.FCOMP = 0.9;
+msn.FLAPR = 0.333;
+msn.flap_span_frac = 0.80;
 
 %% ===================== TAILS ========================================
 msn.Vh     = 0.60;       % horizontal tail volume coefficient
@@ -193,6 +192,8 @@ msn.excr   = 1.13;       % excrescence and interference. With no nose
 
 %% ===================== PROPULSION ===================================
 msn.NPROP   = 8;         % propulsors
+msn.prop_root_tip_ratio = 1.30;
+msn.prop_bank_frac = [];     
 % msn.Dprop REMOVED. Propeller diameter is now DERIVED from span packing
 % by AEGAprop(), because a fixed value goes stale the moment the wing
 % changes: at the converged span of 33 ft the old 2.43 ft understated disc
@@ -231,6 +232,7 @@ msn.etap_cr = 0.84;      % propeller efficiency in CRUISE and TURN
 msn.dWinst  = 120;       % lb, nacelles, pylons, hubs, harness. ALL ESTIMATE:
                          %   64 nacelles + 16 hubs + 40 harness. Now the
                          %   largest unmodelled mass in the aircraft.
+            
 
 %% ===================== BATTERY ======================================
 msn.whkg    = 350;       % Wh/kg at PACK level, project statement.
