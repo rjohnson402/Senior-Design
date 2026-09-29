@@ -49,12 +49,7 @@ msn.dV_ne    = 50;       % kt, never-exceed margin over cruise. Equivalent to
                          %   ASTM F2245 design speeds, not a constant.
 msn.approach_angle = 3;  % approach_angle is in degrees
 
-%% ===================== TOOLCHAIN CONTROL ============================
-msn.fpow      = 0.50;    % fraction of installed power held at the stall
-                         %   condition in blow_wind. The certification test
-                         %   is at IDLE power; even assuming the rule changes,
-                         %   the case that matters is approach, not full
-                         %   takeoff power. Do not set this to 1 and quote it.
+
 msn.CLmax_cap = 4.0;     % hard cap on the blown CLmax. A STATED ASSUMPTION,
                          %   not a computed result. The dynamic-pressure
                          %   blend has no upper bound and knows nothing about
@@ -69,29 +64,96 @@ msn.nu_cr    = msn.mu_cr/msn.rho_cr;   % KINEMATIC viscosity, ft^2/s
 msn.g0       = 32.174;           % ft/s^2
 
 %% ===================== AERODYNAMIC COEFFICIENTS =====================
-msn.CLmax_clean = 1.6;   % NO SOURCE. Drives the VS1 sport-pilot check.
-msn.CLmax_TO    = 2.1;   % NO SOURCE. Input, not a flap calculation.
-msn.CLmax_L     = 2.1;   % NO SOURCE. Landing config, IDLE POWER per
-                         %   14 CFR 23.2110 / ASTM F2245. Blown-wing credit
-                         %   is an assumed rule change, not current law.
-msn.e_osw       = 0.80;  % Oswald factor. Constraint script previously used
-                         %   0.70; they must agree.
+
+msn.CLmax_clean = 1.6;
+
+% --------------------- Landing flaps ---------------------------------
+% Preliminary large single-slotted flap geometry.
+% Flaps extend from near the fuselage to about 80% of each semispan.
+% About 69% of the wing planform lies within the flapped span.
+msn.flap_chord_frac = 0.32;    % flap chord / local wing chord
+msn.flap_area_frac  = 0.69;    % flapped wing planform area / total wing area
+msn.flap_def_L      = 40;      % landing flap deflection, deg
+
+% Approximate section CLmax increase from the landing flap.
+% Roskam-style finite-wing correction:
+%
+% Delta CLmax = Delta clmax * (S_wf/S) * K_sweep
+%
+% This gives approximately:
+% Delta CLmax = 1.40 * 0.69 * 0.92 = 0.89
+msn.dclmax_flap_L = 1.40;
+msn.K_flap_sweep  = 0.92;
+
+msn.dCLmax_L_flap = msn.dclmax_flap_L ...
+                   * msn.flap_area_frac ...
+                   * msn.K_flap_sweep;
+
+% Unblown landing CLmax.
+% Propeller blowing is added later by blow_wind().
+msn.CLmax_L = msn.CLmax_clean + msn.dCLmax_L_flap;
+
+% Leave takeoff value unchanged for now.
+msn.CLmax_TO = 2.1;
+
+% --------------------- Landing flap drag ------------------------------
+% Actual movable flap area is approximately:
+%
+% S_flap/S = (flap chord fraction)*(flapped wing area fraction)
+%
+%          = 0.32 * 0.69
+%          = 0.221
+%
+% For preliminary sizing, model the highly deflected flap approximately
+% as a plate exposed to the flow. The sin^2(delta) term represents the
+% increasing projected area as the flap is deflected.
+%
+% This is a rough conceptual-design drag model, not a final CFD result.
+msn.CD_flap_factor = 1.10;
+
+msn.dCD_flap_L = msn.CD_flap_factor ...
+                * msn.flap_chord_frac ...
+                * msn.flap_area_frac ...
+                * sind(msn.flap_def_L)^2;
+
+% Current estimate gives Delta CD_flap approximately 0.10.
+
+% --------------------- Landing ground roll ----------------------------
+% Touchdown speed relative to stall speed.
+msn.VTD_factor = 1.15;
+
+% Effective tire/brake friction coefficient on dry pavement.
+msn.mu_brake = 0.35;
+
+% Reverse thrust after touchdown expressed as a fraction of aircraft weight.
+%
+% T_reverse = reverse_TW * W
+%
+% 0.08 corresponds to about 208 lbf of reverse thrust for a 2600 lb aircraft.
+% This is only a preliminary assumption until reverse propeller performance
+% is modeled explicitly.
+msn.reverse_TW = 0.08;
+% private-pilot solo cross-country sizing mission
+% three legs give 150 nm total with three full-stop landings
+% the first leg is greater than 50 nm
+msn.enforce_ppl_xc = true;
+msn.ppl_xc_leg_nm = [60 45 45];
+msn.ppl_xc_takeoff_min = 1.0;
+msn.ppl_xc_climb_alt_ft = 5000;
+% After touchdown the aircraft is de-rotated, so the wing does not remain
+% at CLmax. Assume ground-roll CL is 50% of the unblown landing CLmax.
+msn.CL_ground_frac = 0.50;
+
+msn.e_osw = 0.80;
 
 %% ===================== WING =========================================
-msn.AR     = 9;          % LOW for torsional stiffness with leading-edge
-                         %   propulsors (whirl flutter). GJ scales roughly as
-                         %   chord^4, so AR 8 is about 3x stiffer than AR 14.
-                         %   COST: 258 lb at MTOW (2744 vs 2486) and 3.3
-                         %   points of cruise L/D. The stiffness argument was
-                         %   made when the wing was 79 ft^2 with a 25 ft span;
-                         %   it is now ~107 ft^2 with 4.1 ft of chord, which
-                         %   may already be stiffer than needed. YOUR CALL -
-                         %   left at 8 deliberately, not overwritten.
-msn.TR     = 0.45;       % FLOPS general aviation default, Table 1
-msn.SWEEP  = 2;          % QUARTER-CHORD sweep, deg (FLOPS Eq. 14 wants c/4)
-msn.TCA    = 0.15;       % NO SOURCE. Needs a named airfoil from aero.
-msn.FCOMP  = 0.9;        % composite fraction, 0 metal to 1 all carbon
-msn.FLAPR  = 0.333;      % movable surface area / wing area, FLOPS default
+msn.AR = 9;
+msn.TR = 0.35;
+msn.SWEEP = 2;
+msn.TCA = 0.15;
+msn.FCOMP = 0.9;
+msn.FLAPR = 0.333;
+msn.flap_span_frac = 0.80;
 
 %% ===================== TAILS ========================================
 msn.Vh     = 0.60;       % horizontal tail volume coefficient
@@ -130,6 +192,8 @@ msn.excr   = 1.13;       % excrescence and interference. With no nose
 
 %% ===================== PROPULSION ===================================
 msn.NPROP   = 8;         % propulsors
+msn.prop_root_tip_ratio = 1.30;
+msn.prop_bank_frac = [];     
 % msn.Dprop REMOVED. Propeller diameter is now DERIVED from span packing
 % by AEGAprop(), because a fixed value goes stale the moment the wing
 % changes: at the converged span of 33 ft the old 2.43 ft understated disc
@@ -157,7 +221,7 @@ msn.etap_cl = 0.65;      % propeller efficiency in CLIMB and TAKEOFF. A prop
                          %   was making AEGAconstraint return 0.085 kW/kg,
                          %   below both the Velis Electro and the 172S.
 msn.etap_cr = 0.84;      % propeller efficiency in CRUISE and TURN
-msn.PWkWkg  = 0.110;     % takeoff power loading, kW per kg. FROM
+%msn.PWkWkg  = 0.110;     % takeoff power loading, kW per kg. FROM
                          %   AEGAconstraint with the corrected climb
                          %   efficiency; climb governs. Was hardcoded at
                          %   0.176 inside AEGAsize, which was 60 percent high.
@@ -168,6 +232,7 @@ msn.PWkWkg  = 0.110;     % takeoff power loading, kW per kg. FROM
 msn.dWinst  = 120;       % lb, nacelles, pylons, hubs, harness. ALL ESTIMATE:
                          %   64 nacelles + 16 hubs + 40 harness. Now the
                          %   largest unmodelled mass in the aircraft.
+            
 
 %% ===================== BATTERY ======================================
 msn.whkg    = 350;       % Wh/kg at PACK level, project statement.
