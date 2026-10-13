@@ -1,0 +1,82 @@
+function [f,diagnostic] = AEGAplot_climb(study)
+%AEGAPLOT_CLIMB Explain the installed-power envelope using existing results.
+% AEGAplot_climb(trade2035);  % no sizing rerun and no files saved
+% Every power curve is TOTAL installed equivalent shaft rating, including
+% failed motors; none is the surviving motors' actual operating power.
+assert(isstruct(study) && isfield(study,'climb') && istable(study.climb), ...
+    'AEGAplot_climb:input','Pass the trade2035 struct returned by AEGAwingtrades.');
+t = sortrows(study.climb,'ClimbGradient');
+required = {'ClimbGradient','WS_lb_ft2','MTOW_lb','Installed_kW', ...
+    'Normal_hp_lb','BatteryLift_hp_lb','BatteryApproach_hp_lb', ...
+    'BatteryTakeoffClimb_hp_lb','BatteryGoAround_hp_lb','PassesScreen','Driver'};
+assert(all(ismember(required,t.Properties.VariableNames)), ...
+    'AEGAplot_climb:columns','The climb table is missing required sizing outputs.');
+good = t.PassesScreen & isfinite(t.MTOW_lb) & isfinite(t.Installed_kW);
+if ~any(good)
+    warning('AEGAplot_climb:noData','No passing climb cases to plot; inspect trade2035.climb.Status.');
+    f = gobjects(0); diagnostic = table(); return
+end
+x = 100*t.ClimbGradient;
+factor = .745699872*t.MTOW_lb;
+normal = t.Normal_hp_lb.*factor;
+lift = t.BatteryLift_hp_lb.*factor;
+approach = t.BatteryApproach_hp_lb.*factor;
+other = max([normal lift approach],[],2);
+takeoff = t.BatteryTakeoffClimb_hp_lb.*factor;
+goaround = t.BatteryGoAround_hp_lb.*factor;
+installed = t.Installed_kW;
+i0 = find(good & abs(t.ClimbGradient)<1e-12,1);
+if isempty(i0), i0 = find(good,1); end
+baseWeight = t.MTOW_lb(i0); baseGradient = x(i0);
+deltaWeight = t.MTOW_lb-baseWeight;
+diagnostic = table(x,normal,lift,approach,takeoff,goaround,installed, ...
+    t.MTOW_lb,deltaWeight,string(t.Driver),good, ...
+    'VariableNames',{'Gradient_pct','Normal_kW','BatteryLift_kW', ...
+    'BatteryApproach_kW','BatteryTakeoffClimb_kW','BatteryGoAround_kW', ...
+    'Installed_kW','MTOW_lb','DeltaMTOW_lb','Driver','PassesScreen'});
+fprintf('\nClimb-target diagnostic (power is total installed shaft rating):\n');
+disp(diagnostic);
+
+% Replace just this study figure; leave the other trade figures open.
+old = findall(groot,'Type','figure','Name','One-battery-out climb target');
+if ~isempty(old), close(old); end
+f = figure('Color','w','Name','One-battery-out climb target','Visible','on');
+tiledlayout(1,2,'TileSpacing','compact','Padding','compact');
+colors = [.25 .25 .25; .85 .325 .098; .494 .184 .556; 0 .447 .741];
+Y = [other takeoff goaround installed]; Y(~good,:) = NaN;
+ax1 = nexttile; hold(ax1,'on'); grid(ax1,'on'); box(ax1,'on');
+labels = {'Other requirements: normal / lift / approach', ...
+    'Battery-out takeoff climb','Battery-out landing-flap go-around', ...
+    'Selected installed power'};
+styles = {'--s','-^','-d','-o'};
+for k = 1:4
+    width = 1.5; if k==4, width = 2.4; end
+    plot(ax1,x,Y(:,k),styles{k},'Color',colors(k,:), ...
+        'MarkerEdgeColor',colors(k,:),'MarkerFaceColor','w', ...
+        'LineWidth',width,'DisplayName',labels{k});
+end
+xlabel(ax1,'Required climb gradient, %','Color','k');
+ylabel(ax1,'Total installed-equivalent shaft power, kW','Color','k');
+title(ax1,'Installed power is the highest requirement','Color','k');
+finiteY = Y(isfinite(Y));
+ylim(ax1,[0 max(1,1.12*max(finiteY))]);
+legend(ax1,'Location','best','Color','w','TextColor','k','EdgeColor',[.4 .4 .4]);
+
+ax2 = nexttile; hold(ax2,'on'); grid(ax2,'on'); box(ax2,'on');
+dy = deltaWeight; dy(~good) = NaN;
+plot(ax2,x,dy,'-o','Color',colors(4,:),'MarkerFaceColor','w','LineWidth',1.8);
+yline(ax2,0,':','Color',[.4 .4 .4]);
+xlabel(ax2,'Required climb gradient, %','Color','k');
+ylabel(ax2,sprintf('Change in MTOW from %.3g%% case, lb',baseGradient),'Color','k');
+title(ax2,sprintf('Baseline MTOW = %.2f lb',baseWeight),'Color','k');
+range = max(abs(dy(good)));
+pad = max(.1,.15*range);
+ylim(ax2,[min(0,min(dy(good)))-pad max(0,max(dy(good)))+pad]);
+text(ax2,.03,.97,sprintf('Largest absolute change: %.3f lb (%.4f%%)', ...
+    range,100*range/baseWeight),'Units','normalized','VerticalAlignment','top', ...
+    'Color','k','BackgroundColor','w');
+set([ax1 ax2],'Color','w','XColor','k','YColor','k');
+sgtitle(f,sprintf('Fixed W/S %.1f: re-sized at each target; flat segments mean another constraint governs', ...
+    t.WS_lb_ft2(find(good,1))),'Color','k');
+drawnow;
+end

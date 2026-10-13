@@ -1,8 +1,9 @@
 function con = AEGAconstraint(msn, CD0, doplot, WS_override, CLmax_L_blown, CLmax_TO_blown)
-%AEGACONSTRAINT  Constraint diagram for the AEGA, 14 CFR Part 22 / ASTM F2245.
+%AEGACONSTRAINT  Conceptual power/wing-loading screens for the AEGA project.
 %
 %   con = AEGAconstraint(msn, CD0, doplot)
-%   AEGAconstraint()   runs the baseline, plots and prints
+%   AEGAconstraint()   sizes current inputs, then plots that aircraft
+%   con = AEGAconstraint(out,false) checks an AEGAsize result quietly
 %
 %   msn     shared inputs from AEGAinputs(). READ ONLY.
 %   CD0     zero-lift drag coefficient. AEGAsize passes its own drag
@@ -23,8 +24,34 @@ function con = AEGAconstraint(msn, CD0, doplot, WS_override, CLmax_L_blown, CLma
 %   UNITS: lb, ft, s. Power loading is carried in hp/lb internally and
 %   converted to kW/kg on output.
 
+% Public convenience calls use the same closed aircraft as the studies.
+% Internal six-argument calls remain quiet and never re-enter sizing.
+if nargin == 0 || (nargin == 1 && isempty(msn))
+    sized = AEGAsize();
+    con = AEGAconstraint(sized,true);
+    return
+end
+if isstruct(msn) && isfield(msn,'msn') && isfield(msn,'MTOW')
+    sized = msn;
+    show = true;
+    if nargin >= 2 && ~isempty(CD0)
+        validateattributes(CD0,{'logical','numeric'},{'scalar','binary'});
+        show = logical(CD0);
+    end
+    con = AEGAconstraint(sized.msn,sized.CD0,show,sized.WSR,sized.CLmax,sized.CLmax_TO);
+    con.installed_PW_hp_lb=sized.PTO_kW/(.745699872*sized.MTOW);
+    if show
+        plot(sized.WSR,con.installed_PW_hp_lb,'kd','MarkerSize',10, ...
+            'MarkerFaceColor',[.85 .55 .2],'DisplayName','Sized installed power');
+        ylim([0 max(ylim(gca))*max(1,con.installed_PW_hp_lb/.14)]);
+    end
+    return
+end
 if nargin < 1 || isempty(msn), msn = AEGAinputs(); end
-if nargin < 2 || isempty(CD0), CD0 = 0.0218; end
+if nargin < 2 || isempty(CD0)
+    if isfield(msn,'polar'), CD0=msn.polar.CD0_fit; else, CD0=0.0218; end
+    if isfield(msn,'CD0_override') && ~isempty(msn.CD0_override), CD0=msn.CD0_override; end
+end
 if nargin < 3, doplot = true; end
 
 %% ======================= CONSTANTS =====================================
@@ -76,14 +103,11 @@ if nargin >= 5 && ~isempty(CLmax_L_blown),  CL_land = CLmax_L_blown;  end
 CL_TO = msn.CLmax_TO;
 if nargin >= 6 && ~isempty(CLmax_TO_blown), CL_TO = CLmax_TO_blown; end
 %% ======================= WING LOADING LIMITS (vertical lines) ==========
-% 1. Light-sport CERTIFICATION: VS0 <= 61 KCAS, landing configuration, idle
-%    power (MOSAIC, 14 CFR Part 22). The team designs to 60. Always enforced.
+% 1. Project landing-config speed target. CL_land may include powered lift;
+%    this is not an idle-power certification-stall demonstration.
 lim.VS0  = 0.5*rho0*(msn.VS0*KT)^2*CL_land;
-% 2. Sport-pilot OPERATION: VS1 <= 59 KCAS, clean (14 CFR 61.316). Not a
-%    certification limit. Enforce only if the trainer must be flyable by
-%    sport pilots.
+% 2. Separate clean-stall study target; applicability is a project decision.
 lim.VS1  = 0.5*rho0*(msn.VS1_op*KT)^2*msn.CLmax_clean;
-% 3. Landing distance over 50 ft, wheel brakes only.
 % 3. Landing distance over 50 ft.
 %
 % Landing is split into:
@@ -95,10 +119,7 @@ lim.VS1  = 0.5*rho0*(msn.VS1_op*KT)^2*msn.CLmax_clean;
 %
 % S_ground is calculated from braking, aerodynamic drag, and reverse
 % propeller thrust after touchdown.
-
-% At a fixed fraction of touchdown speed, L/W, D/W, and deceleration
-% are independent of W/S in this model. Ground roll is proportional to
-% W/S, so its limit can be solved without an arbitrary search ceiling.
+% A fixed delay/ramp makes reverse ground roll nonlinear in W/S.
 S_air = 50/tand(msn.approach_angle);
 ground_per_WS = landing_ground_distance(msn,CD0,CL_land,1);
 if ~isfinite(S_air) || S_air < 0 || ...
@@ -106,6 +127,11 @@ if ~isfinite(S_air) || S_air < 0 || ...
     error('AEGAconstraint:landingModel','Invalid landing-model inputs.');
 end
 lim.land = max(0,(S_L - S_air)/ground_per_WS);
+if msn.reverse_TW>0 && isfield(msn,'reverse_model') && strcmp(msn.reverse_model,'delayed-target') && S_L>S_air
+    hi=max(1,2*lim.land);
+    while landing_ground_distance(msn,CD0,CL_land,hi)<S_L-S_air, hi=2*hi; end
+    lim.land=fzero(@(ws) landing_ground_distance(msn,CD0,CL_land,ws)-(S_L-S_air),[eps hi]);
+end
 if msn.enforce_land && lim.land <= 0
     error('AEGAconstraint:landingInfeasible', ...
         'Field length %.1f ft cannot accommodate the %.1f ft airborne segment plus ground roll.', ...
@@ -113,14 +139,18 @@ if msn.enforce_land && lim.land <= 0
 end
 
 WS_margin = 0.98;
-WS_design = lim.VS0*WS_margin;   set_by = 'VS0 certification';
+WS_design = lim.VS0*WS_margin;   set_by = 'landing-config target';
 if msn.enforce_VS1  && lim.VS1  < WS_design
-    WS_design = lim.VS1;   set_by = 'VS1 sport pilot';
+    WS_design = lim.VS1;   set_by = 'clean-stall target';
 end
 if msn.enforce_land && lim.land < WS_design
     WS_design = lim.land;  set_by = 'landing distance';
 end
 if nargin >= 4 && ~isempty(WS_override), WS_design = WS_override; set_by = 'blown wing'; end
+if doplot
+    plotMax=5*ceil(1.08*max([40 WS_design lim.land])/5);
+    W_S=linspace(4,plotMax,321);
+end
 
 
 %% ======================= POWER LOADING CONSTRAINTS =====================
@@ -172,7 +202,13 @@ con.CL_turn    = msn.CLmax_clean/k_tn^2;
 con.TOP        = TOP;
 con.VS0_kt     = sqrt(2*WS_design/(rho0*CL_land))/KT;
 con.VS1_kt     = VS1(WS_design)/KT;
-con.S_land_ft = S_air + landing_ground_distance(msn,CD0,CL_land,WS_design);
+landing=AEGAlandingroll2035(msn,CD0,CL_land,WS_design);
+con.S_land_ft = S_air + landing.distance_ft;
+con.landing_ground_roll=landing;
+con.S_land_no_reverse_ft=S_air+landing.no_reverse_distance_ft;
+con.S_land_air_ft = S_air;
+con.S_land_ground_ft = con.S_land_ft-S_air;
+con.reverse_TW = msn.reverse_TW;
 con.landing_ok = con.S_land_ft <= S_L*(1 + 1e-9);
 con.W_S = W_S;
 con.PW_cruise  = curves(1,:);
@@ -185,7 +221,7 @@ con.msn        = msn;
 % limits that are checked but not enforced
 viol = {};
 if WS_design > lim.VS1*(1 + 1e-9)
-    viol{end+1} = sprintf('VS1 clean = %.1f kt, sport-pilot limit %d KCAS', ...
+    viol{end+1} = sprintf('VS1 clean = %.1f kt, separate target %d KCAS', ...
                           con.VS1_kt, msn.VS1_op);
 end
 if ~con.landing_ok
@@ -199,6 +235,13 @@ if doplot
     yl = [0 0.15];
     figure('Color',[1 1 1],'Position',[100 100 800 600]);
     hold on; grid on; box on;
+    ax = gca;
+    ax.Color = [0.95 0.95 0.95];
+    ax.XColor = 'k';
+    ax.YColor = 'k';
+    ax.GridColor = 'k';
+    ax.GridAlpha = 0.25;      % default is 0.15; raise it if the grid looks too faint
+    ax.LineWidth = 1;         % axis line thickness, optional
     plot(W_S, con.PW_cruise,  'b-',  'LineWidth',2, 'DisplayName', ...
          sprintf('Cruise (%d kt @ %d ft)', msn.Vkt, msn.h_cr));
     plot(W_S, con.PW_climb,   'r-',  'LineWidth',2, 'DisplayName', ...
@@ -207,20 +250,22 @@ if doplot
          sprintf('Level turn (%.1fg @ %.1f x turn stall)', n_turn, k_tn));
     plot(W_S, con.PW_takeoff, 'g-.', 'LineWidth',2, 'DisplayName', ...
          sprintf('Takeoff (%d ft over 50 ft)', S_TO));
-    plot(lim.VS0*[1 1],  yl, 'y-',  'LineWidth',2, 'DisplayName', ...
-         sprintf('VS0 %d KCAS, certification (%.1f psf)', msn.VS0, lim.VS0));
+    % The powered landing-config stall target remains a numerical screen.
+    % Presentation diagram shows one vertical landing-distance limit only.
     % plot(lim.VS1*[1 1],  yl, 'k:',  'LineWidth',2, 'DisplayName', ...
     %      sprintf('VS1 %d KCAS, sport pilot (%.1f psf)', msn.VS1_op, lim.VS1));
     plot(lim.land*[1 1], yl, 'c--', 'LineWidth',2, 'DisplayName', ...
          sprintf('Landing %d ft over 50 ft (%.1f psf)', S_L, lim.land));
     plot(WS_design, PW_req, 'ko', 'MarkerSize',10, ...
-         'MarkerFaceColor','y', 'DisplayName','Design point');
+         'MarkerFaceColor','y', 'DisplayName','Normal constraint requirement');
     xlabel('Wing loading, W/S (lb/ft^2)','FontSize',12,'FontWeight','bold', 'Color','k');
     ylabel('Power loading, P/W (hp/lb)','FontSize',12,'FontWeight','bold', 'Color','k');
-    title('AEGA constraint diagram, 14 CFR Part 22', ...
+    title('AEGA conceptual sizing constraints', ...
           'FontSize',14,'FontWeight','bold', 'Color','k');
-    axis([4 40 yl]);
+    axis([4 max(W_S) yl]);
     lg = legend('Location','northwest');
+    lg.Color = [0.3 0.3 0.3];
+    lg.TextColor = 'w';
     set(lg, 'FontSize', 9);
 end
 
@@ -256,17 +301,6 @@ if nargout == 0
 end
 end
 function S_ground = landing_ground_distance(msn,CD0,CL_land,WS)
-% Evaluate the original ground-roll model at the requested wing loading.
-validateattributes(WS,{'numeric'},{'scalar','real','finite','positive'});
-VTD = msn.VTD_factor*sqrt(2*WS/(msn.rho_SL*CL_land));
-Vg = linspace(0,VTD,200);
-qg = 0.5*msn.rho_SL.*Vg.^2;
-CL_ground = msn.CL_ground_frac*msn.CLmax_L;
-CD_ground = CD0 + msn.dCD_flap_L ...
-    + CL_ground^2/(pi*msn.AR*msn.e_osw);
-L_W = qg*CL_ground/WS;
-D_W = qg*CD_ground/WS;
-N_W = max(1 - L_W,0);
-a = msn.g0*(msn.mu_brake*N_W + D_W + msn.reverse_TW);
-S_ground = trapz(Vg,Vg./max(a,1e-6));
+roll=AEGAlandingroll2035(msn,CD0,CL_land,WS);
+S_ground=roll.distance_ft;
 end

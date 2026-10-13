@@ -1,0 +1,63 @@
+from pathlib import Path
+import shutil, re, json, hashlib
+root=Path.cwd().resolve()
+assert root==Path(r'C:\Users\ianjf\repos\Senior-Design\sizing').resolve()
+arc=root/'archive'/'workflow_before_20261011'
+replacements={
+    '`run_currenttrades2035`':'`AEGAtrades`',
+    '`run_wingtrades2035`':"`AEGAtrades('wing')`",
+    '`run_optimizedwingcomparison2035`':"`AEGAtrades('wings')`",
+    '`run_cruiseproptrades2035`':"`AEGAtrades('props')`",
+    '`run_reversetrades2035`':"`AEGAtrades('reverse')`",
+    '`run_inputreview2035`':"`AEGAtrades('inputs')`",
+    '`AEGAtrade_size`':'`AEGAsize`',
+    '`AEGAreversecase2035`':"`AEGAtrades('reverse')`",
+}
+for p in (root/'docs').glob('*.md'):
+    if p.name=='THREE_MAIN_TRADES.md': continue
+    target=arc/'docs'/p.name
+    target.parent.mkdir(exist_ok=True)
+    assert not target.exists()
+    shutil.copy2(p,target)
+    content=p.read_text(encoding='utf-8')
+    for a,b in replacements.items(): content=content.replace(a,b)
+    notice=("**Workflow update (October 11):** Use [the three-study guide](THREE_MAIN_TRADES.md) "
+            "and [the current commands](../README.md). Numerical examples below are dated "
+            "snapshots and may use older inputs, AR18 or instantaneous reverse credit. "
+            "The live reference is AR15.5 with no reverse credit; adaptive full-span AR remains 18. "
+            "Old runners and standalone check commands are archived/private; use `AEGAtrades('check')`.\n\n")
+    if p.name=='TELESCOPING_TRADE.md':
+        notice+="The older fixed-geometry telescoping sweep described below is archived. The active replacement is `AEGAtrades('wings')`, which independently optimizes both families.\n\n"
+    p.write_text(notice+content,encoding='utf-8')
+
+for name in ['CURRENT_TRADE_REVIEW.md','REVERSE_THRUST_REVIEW.md','GEOMETRY_HANDOFF.md']:
+    p=root/name; shutil.copy2(p,arc/(name+'.txt'))
+    s=p.read_text(encoding='utf-8')
+    for a,b in replacements.items(): s=s.replace(a,b)
+    note=("**Saved-results note:** These numerical results predate workflow consolidation and "
+          "use the earlier AR18 reference. The live input is now AR15.5. See "
+          "[the simplified workflow](README.md) and [three-study guide](docs/THREE_MAIN_TRADES.md); "
+          "rerun the appropriate study to refresh this snapshot.\n\n")
+    p.write_text(note+s,encoding='utf-8')
+
+p=root/'archive'/'README.md'
+p.write_text(p.read_text(encoding='utf-8')+"\n\nThe October 11 workflow consolidation is in [workflow_before_20261011](workflow_before_20261011/README.md). Public commands are now AEGAsize, AEGAconstraint and AEGAtrades. Active dependencies live in private/.\n",encoding='utf-8')
+
+# Preserve the migration recipe off the active root, after verifying targets.
+src=root/'refactor_workflow.py'; dst=arc/'refactor_workflow.py.txt'
+assert src.resolve().is_relative_to(root) and dst.resolve().is_relative_to(root)
+assert not dst.exists()
+shutil.move(str(src),str(dst))
+
+manifest=json.loads((arc/'SHA256.json').read_text())
+for name,expected in manifest.items():
+    assert hashlib.sha256((arc/(name+'.txt')).read_bytes()).hexdigest()==expected
+print('All original source checksums verified; archive cannot shadow active MATLAB functions.')
+print('Public MATLAB files:', ', '.join(p.name for p in root.glob('*.m')))
+missing=[]
+for p in [root/'README.md',root/'docs'/'THREE_MAIN_TRADES.md',root/'private'/'README.md']:
+    for ref in re.findall(r'\]\(([^)]+)\)',p.read_text(encoding='utf-8')):
+        if '://' in ref or ref.startswith('#'): continue
+        if not (p.parent/ref).exists(): missing.append((p.name,ref))
+assert not missing, missing
+print('New workflow documentation links verified.')

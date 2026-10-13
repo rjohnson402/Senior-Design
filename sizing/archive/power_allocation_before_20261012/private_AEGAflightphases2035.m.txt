@@ -1,0 +1,130 @@
+function t = AEGAflightphases2035(msn,DG,S,b,layout,CD0,Pinstalled,cg,cruise,opt)
+% Phase schedule: actual shaft-power fractions, lift capacity and force balance.
+% "Throttle" means fraction of assigned shaft rating, not RPM or lever angle.
+A=[layout.A_side layout.A_side]; share=A/sum(A); ratings=Pinstalled*share;
+high=[1:3 5:7]; tips=[4 8]; r=opt.retract_fraction;
+rows=repmat(blank(),0,1);
+climbV=1.3*sqrt(2*(DG/S)/(msn.rho_SL*msn.CLmax_clean))/1.688;
+spec={"Takeoff",1.1*msn.VS0,'takeoff',0,msn.ppl_xc_takeoff_min/60; ...
+    "Initial climb",1.3*msn.VS0,'takeoff',730,1/60; ...
+    "Clean climb",climbV,'clean',730,max(0,msn.h_cr-730)/730/60; ...
+    "Approach",1.3*msn.VS0,'landing',-1,1/60; ...
+    "Landing / flare",msn.VTD_factor*msn.VS0,'landing',0,10/3600; ...
+    "Go-around",1.3*msn.VS0,'landing',730,0};
+for j=1:size(spec,1)
+    name=spec{j,1}; speed=spec{j,2}; cfg=spec{j,3}; roc=spec{j,4}; duration=spec{j,5};
+    V=speed*1.688; rho=msn.rho_SL;
+    gamma=0;
+    if roc>0, gamma=asin(min(.95,roc/60/V)); end
+    if roc<0, gamma=-msn.approach_angle*pi/180; end
+    CLreq=DG*cos(gamma)/(.5*rho*V^2*S);
+    s0=AEGAblownstate2035(msn,S,b,layout,V,rho,zeros(1,8),cfg,r,1);
+    D=.5*rho*V^2*S*(CD0+s0.dCD_flap+CLreq^2/(pi*msn.AR*msn.e_osw));
+    requiredT=max(0,D+DG*sin(gamma));
+    rhoA=rho*sum(A); vi=requiredT/(rhoA*(sqrt(V^2+2*requiredT/rhoA)+V));
+    power=requiredT*(V+vi)/(msn.prof*737.56);
+    liftMargin=1.2;
+    if name=="Takeoff", liftMargin=1.1;
+    elseif name=="Approach", liftMargin=1.3;
+    elseif name=="Landing / flare", liftMargin=msn.VTD_factor; end
+    needCL=CLreq*liftMargin^2;
+    if needCL>s0.CL_unblown && needCL<=msn.CLmax_cap
+        hi=max(1,2*Pinstalled);
+        liftfun=@(p) available(p)-needCL;
+        if liftfun(hi)>=0
+            plift=fzero(liftfun,[0 hi]); power=max(power,plift);
+        else, power=hi; end
+    end
+    if name=="Takeoff", power=Pinstalled; end
+    state=AEGAblownstate2035(msn,S,b,layout,V,rho,power*share,cfg,r,1);
+    row=fill(name,speed,duration,1,S,b,msn.AR,power,power*share,state,CLreq,needCL);
+    row.Drag_lb=D; row.RequiredThrust_lb=requiredT; row.ThrustSurplus_lb=state.thrust_lb-requiredT;
+    row.ROC_fpm=roc; row.Distance_nm=speed*duration*cos(gamma);
+    if roc<0, row.ROC_fpm=V*sin(gamma)*60; end
+    if name=="Takeoff", row.Distance_nm=msn.S_field/6076.12; end
+    row.ThrustBalancePass=roc>=0 || abs(row.ThrustSurplus_lb)<max(1,.001*DG);
+    row.RequiredForSizing=name~="Landing / flare";
+    if name=="Go-around", row.Energy_kWh=0; row.Distance_nm=0; end
+    rows(end+1,1)=row; %#ok<AGROW>
+end
+% Cruise uses two motors only. Blowing is diagnostic; cruise sizing credits
+% CLEAN CLmax so area cannot shrink by spending unaccounted high-lift power.
+for j=1:numel(cruise)
+    a=cruise(j); pe=zeros(1,8); pe(tips)=a.shaft_kW/2;
+    axial_pe=pe;
+    if isfield(a,'wingtip_prop') && a.wingtip_prop.enabled
+        z=a.wingtip_prop;
+        pe(:)=0; pe(z.active_indices)=z.shaft_each_kW;
+        axial_pe(:)=0; axial_pe(z.active_indices)=z.axial_shaft_each_kW;
+    end
+    state=AEGAblownstate2035(msn,S,b,layout,a.speed_ktas*1.688,msn.rho_cr,axial_pe,'clean',r,a.deployment);
+    if isfield(a,'wingtip_prop') && a.wingtip_prop.enabled, state.thrust_lb=z.thrust_lb; end
+    row=fill(a.phase,a.speed_ktas,a.duration_hr,a.deployment,a.area_ft2,a.span_ft,a.AR, ...
+        a.shaft_kW,pe,state,a.CL,a.CL*opt.cruise_stall_speed_factor^2);
+    row.CLmaxCredited=msn.CLmax_clean; row.LiftPass=a.clean_lift_pass;
+    row.StallSpeedFactor=a.stall_speed_margin;
+    row.Distance_nm=a.distance_nm; row.Drag_lb=a.drag_lb; row.RequiredThrust_lb=a.drag_lb;
+    row.ThrustSurplus_lb=state.thrust_lb-a.drag_lb;
+    row.ThrustBalancePass=abs(row.ThrustSurplus_lb)<max(1,.001*DG);
+    row.Energy_kWh=a.energy_kWh/(1+msn.ovh);
+    row.RequiredForSizing=true;
+    rows(end+1,1)=row; %#ok<AGROW>
+end
+% Idle clean descent, with natural glide angle; no arbitrary powered lift.
+V=opt.mission_profile.reserve_speed_ktas*1.688;
+CLreq=DG/(.5*msn.rho_cr*V^2*S);
+D=.5*msn.rho_cr*V^2*S*CD0+DG^2/(.5*msn.rho_cr*V^2*pi*msn.e_osw*b^2);
+gamma=atan(D/DG); descentROC=V*sin(gamma)*60;
+duration=max(0,msn.h_cr-500)/descentROC/60;
+state=AEGAblownstate2035(msn,S,b,layout,V,msn.rho_cr,zeros(1,8),'clean',r,1);
+row=fill("Descent",V/1.688,duration,1,S,b,msn.AR,0,zeros(1,8),state,CLreq,CLreq*1.2^2);
+row.Distance_nm=row.Speed_ktas*duration*cos(gamma); row.ROC_fpm=-descentROC; row.Drag_lb=D;
+row.RequiredForSizing=true; rows(end+1,1)=row;
+order=[1 2 3 7:numel(cruise)+6 numel(rows) 4 5 6];
+t=struct2table(rows(order));
+% Reverse is ground-only; no reverse slipstream lift or airborne thrust credit.
+if msn.reverse_TW>0 && isfield(msn,'reverse_model') && strcmp(msn.reverse_model,'delayed-target')
+    ground=AEGAlandingroll2035(msn,CD0,msn.landing_CL_for_roll,DG/S);
+    if ground.shaft_energy_kWh>0
+        row=blank(); row.Phase="Landing ground roll / reverse";
+        row.Duration_hr=ground.duration_s/3600; row.Speed_ktas=ground.distance_ft/max(ground.duration_s,eps)/1.688;
+        row.Deployment=1; row.Area_ft2=S; row.Span_ft=b; row.AR=msn.AR;
+        row.ShaftPower_kW=ground.shaft_energy_kWh/row.Duration_hr;
+        row.BatteryPower_kW=row.ShaftPower_kW/(msn.eta_m*msn.eta_pe);
+        row.Energy_kWh=ground.battery_energy_kWh;
+        row.CruiseThrottle_percent=100*row.ShaftPower_kW/sum(ratings(tips));
+        row.TotalInstalledPower_percent=100*row.ShaftPower_kW/Pinstalled;
+        row.Thrust_lb=-ground.average_reverse_TW*DG;
+        flare=find(t.Phase=="Landing / flare");
+        t=[t(1:flare,:); struct2table(row); t(flare+1:end,:)];
+    end
+end
+    function cl=available(power)
+        z=AEGAblownstate2035(msn,S,b,layout,V,rho,power*share,cfg,r,1); cl=z.CL_blown;
+    end
+    function row=fill(name,speed,duration,f,area,span,AR,power,pe,state,cl,need)
+        row=blank(); row.Phase=name; row.Speed_ktas=speed; row.Duration_hr=duration;
+        row.Deployment=f; row.Span_ft=span; row.Area_ft2=area; row.AR=AR;
+        row.ShaftPower_kW=power; row.BatteryPower_kW=power/(msn.eta_m*msn.eta_pe);
+        row.HighLiftThrottle_percent=100*sum(pe(high))/sum(ratings(high));
+        row.CruiseThrottle_percent=100*sum(pe(tips))/sum(ratings(tips));
+        row.TotalInstalledPower_percent=100*power/Pinstalled;
+        row.CLrequired=cl; row.CLmaxUnblown=state.CL_unblown;
+        row.CLmaxBlown=state.CL_blown; row.DeltaCL=state.DeltaCL;
+        row.CLmaxCredited=state.CL_blown; row.BlownAreaFraction=state.blown_area_fraction;
+        row.StallSpeedFactor=sqrt(state.CL_blown/cl);
+        row.LiftPass=state.CL_blown>=need-1e-7;
+        row.PowerPass=max(pe./ratings)<=1+1e-7;
+        row.Thrust_lb=state.thrust_lb;
+        row.Energy_kWh=row.BatteryPower_kW*duration;
+    end
+end
+function r=blank()
+r=struct('Phase',"",'Speed_ktas',0,'Duration_hr',0,'Distance_nm',0,'ROC_fpm',0, ...
+    'Deployment',1,'Span_ft',0,'Area_ft2',0,'AR',0,'ShaftPower_kW',0,'BatteryPower_kW',0, ...
+    'HighLiftThrottle_percent',0,'CruiseThrottle_percent',0,'TotalInstalledPower_percent',0, ...
+    'CLrequired',0,'CLmaxUnblown',0,'CLmaxBlown',0,'DeltaCL',0,'CLmaxCredited',0, ...
+    'BlownAreaFraction',0,'StallSpeedFactor',0,'LiftPass',true,'PowerPass',true, ...
+    'Thrust_lb',0,'Drag_lb',0,'RequiredThrust_lb',0,'ThrustSurplus_lb',0, ...
+    'ThrustBalancePass',true,'RequiredForSizing',false,'Energy_kWh',0,'EnergyWithAllowance_kWh',0);
+end

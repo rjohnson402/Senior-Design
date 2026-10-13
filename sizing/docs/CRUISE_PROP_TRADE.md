@@ -1,0 +1,188 @@
+**Workflow update (October 11):** Use [the three-study guide](THREE_MAIN_TRADES.md) and [the current commands](../README.md). Numerical examples below are dated snapshots and may use older inputs, AR18 or instantaneous reverse credit. The active concept is AR15.5, W/S27 with a conditional 6% ground-reverse target; see [the October12 configuration](REVERSE_CONFIGURATION.md). Adaptive full-span AR remains18. Old runners and standalone check commands are archived/private; use `AEGAtrades('check')`.
+
+# Cruise prop diameter and high-lift prop downsizing
+
+**October 12 power-allocation update:** the active study now sizes the cruise
+pair from cruise/reserve power and independently sizes the six high-lift motors
+from residual low-speed thrust, blown lift and failure constraints. Total
+installed shaft rating is calculated, not assigned from disk area. The cruise
+wingtip interaction model is enabled. See [the equations and current result](PROP_POWER_ALLOCATION.md).
+Numerical optimum regions quoted below are historical until a new full-grid
+search is run; the current reference AR comes from `AEGAinputs` (15.5).
+
+**Current usage:** run `s = AEGAtrades('props')`. Inputs come from `AEGAinputs`,
+including conditional reverse, the current AR and the preliminary cruise swirl
+model. The original October 10/11 numerical examples below are dated snapshots.
+
+**October 11 revision:** latest results are in
+[the updated three-study review](../CURRENT_TRADE_REVIEW.md). Mission/technology
+defaults now inherit the supplied input struct. The current taper comes from
+`AEGAinputs` (.35), with AR18 as the explicit high-AR study reference. Common
+hub spacing accommodates 3.2-ft high-lift props across all three studies.
+
+Run `AEGAtrades('props')` in MATLAB from the sizing folder. The result is
+`cruiseProps2035` in your workspace and a timestamped `trade_results/cruise_props_*`
+folder. Three summary figures open after sizing finishes. The individual
+constraint checks do **not** draw a diagram or print their tables.
+
+## What it compares
+
+Two wingtip cruise propellers cover 2–6 ft, with 0.25-ft spacing from 2–3.5 ft
+and 0.5-ft spacing above that. A lower-bound check found the minimum region
+around 2.75–3 ft and an increase in MTOW by 2 ft. Six equal
+high-lift propellers sweep 1–3.2 ft. Each combination re-sizes aircraft weight,
+wing area, installed power and battery capacity at W/S16–36 lb/ft², including
+the current design input. AR18 and the input taper remain fixed. The high-lift hubs stay at the same physical
+stations, so smaller props do not silently move inward or change the layout.
+The cruise hubs sit at the wing tips; their disks can extend beyond the tips.
+
+The study refines high-lift diameter in 0.05-ft steps near both the best-weight
+samples and the smallest passing samples. It reports two selections for each
+cruise diameter:
+
+- **Minimum sampled MTOW:** the useful design choice within this search.
+- **Smallest passing high-lift diameter:** a downsizing diagnostic. It can
+  require much more installed power and mass than the first choice.
+
+A second refinement samples W/S in 0.5-lb/ft² steps near each minimum-weight
+selection and nearby small-prop diameters. Cases with a high-lift diameter
+equal to or larger than the cruise diameter are retained as rejected layouts.
+
+An all-operating comparison explains the potential downsizing benefit. The
+primary comparison retains all four mirrored battery-bank failure screens.
+Battery bank 4 feeds both cruise motors. Its loss leaves only the six
+high-lift propellers for the low-speed maneuvers being checked.
+
+## How power and thrust are coupled
+
+The active model assigns independent group ratings:
+
+```matlab
+cruise_pair_kW = max(cruise_and_reserve_shaft_kW) * cruise_rating_margin;
+high_lift_group_kW = constraint_solved_residual_rating;
+total_rating_kW = cruise_pair_kW + high_lift_group_kW;
+cruise_motor_each_kW = cruise_pair_kW / 2;
+high_lift_motor_each_kW = high_lift_group_kW / 6;
+```
+
+The high-lift group supplies thrust the rated cruise pair cannot provide and
+any needed blowing. Approach additionally enforces its descent thrust balance.
+Different disk loading means actual thrust fractions differ from rating
+fractions. Cruise/reserve still operate the two cruise motors alone. A motor
+map is needed to validate the assumed low-speed pitch/power absorption.
+
+## Constraints it checks
+
+Every completed sizing case calls
+`AEGAconstraint(out.msn,out.CD0,false,out.WSR,out.CLmax,out.CLmax_TO)` with a
+captured output. The same quiet constraint model is also called inside sizing.
+The study checks normal power requirements and the takeoff field correlation,
+the 1,500-ft modeled landing distance, prop placement, cruise lift margin and
+available cruise-motor rating. Required flight phases must pass power, lift
+and force-balance checks at their actual throttle.
+
+The battery-out mode additionally sizes for the four bank failures using the
+existing powered-lift, approach, takeoff-flap climb and landing-flap go-around
+screens. It preserves surviving ratings, with no crossfeed or overload.
+The separate three-stop mission remains an energy floor.
+
+The current mission is **250 nm at 120 KTAS plus 45 minutes reserve**. The
+assigned 300-nm mission is a separate requirement: change `msn.range = 300`
+in the runner to evaluate it. Results from different missions should not be
+mixed on a diameter comparison slide.
+
+## Historical October 10 result
+
+These rows use the earlier .20 taper, 2.8-ft hub envelope and narrower bounds.
+For the expanded search with current inputs, use CURRENT_TRADE_REVIEW.md.
+
+The checked full run evaluated 251 unique designs on October 10, 2026. All
+three minimum-MTOW battery-out selections use W/S30 and pass the enabled
+constraints. See [the summary figure](../trade_results/cruise_props_20261010_163126_508/04_cruise_prop_trade.png)
+and [exact selections](../trade_results/cruise_props_20261010_163126_508/02_selected_designs.csv).
+Rounded values are:
+
+| Cruise diameter, ft | High-lift diameter, ft | MTOW, lb | Installed shaft rating, kW |
+|---:|---:|---:|---:|
+| 4.0 | 2.55 | 2,222 | 137 |
+| 4.5 | 2.70 | 2,259 | 146 |
+| 5.0 | 2.80 | 2,306 | 159 |
+
+The governing power case is **battery 4 out, landing-flap go-around**. With
+all failures omitted, all three minimum-weight samples choose 1.15-ft
+high-lift props and MTOWs of approximately 2,174/2,197/2,228 lb. That is useful
+evidence of why the failure case matters, rather than a recommendation to
+remove it.
+
+The smallest passing battery-out diameters are 1.0/1.0/1.1 ft, but they require
+approximately 958/1,565/1,418 kW total installed rating. These are mathematical
+passes under an uncapped power budget, not credible selected propeller designs.
+The 1.0-ft cases reach the lower search bound, so no physical minimum has been
+established. The 5-ft cruise case reaches the 2.8-ft high-lift upper bound at
+its best-weight selection; the 4-ft cruise result reaches the cruise-diameter
+lower bound. Neither is a demonstrated global optimum.
+
+Larger cruise disks improve the modeled ideal propulsive efficiency, but
+blade mass and the assigned motor ratings also change. Within this model the
+net resized aircraft gets heavier across these three diameters. This does
+not establish that a larger wingtip prop is less efficient in a validated
+aircraft: RPM, blade design, independent motor allocation and wingtip-flow
+interaction are not resolved here.
+
+## Historical controls and current outputs
+
+Edit these lines in `run_cruiseproptrades2035.m`:
+
+```matlab
+cfg = AEGAstudysettings2035(msn);
+opt.cruise_diameter_ft = cfg.cruise_diameters_ft; % 2-6, finer near 2.75-3
+opt.high_lift_diameter_ft = cfg.high_lift_diameters_ft; % 1-3.2
+opt.WS = cfg.prop_WS; % 16-36 plus current input
+opt.refine_step_ft = .05;
+opt.refine_WS_step = .5;
+opt.max_installed_shaft_kW = Inf; % replace with an established team budget
+opt.plot_constraints = false;   % true plots only selected minimum-MTOW cases
+opt.doplot = true;
+opt.save_plots = true;
+```
+
+If the team sets a total shaft-power budget, cases above it are rejected
+rather than resized with that rating silently capped. To run with no figures,
+set both `doplot` and `save_plots` to `false`. Direct function calls default
+to no plot export; the runner explicitly enables export with an output folder.
+
+| Output | Use |
+|---|---|
+| `01_all_cases.csv` | Every tested combination, flags, drivers, power, mass and thrust |
+| `02_selected_designs.csv` | Minimum-MTOW and smallest-passing selections |
+| `03_downsize_limits.csv` | Search-bound flags and adjacent smaller tested rejection |
+| `04_cruise_prop_trade.png/.fig` | Main diameter trade: MTOW, selected small diameter, installed power and cruise power |
+| `05_high_lift_downsizing.png/.fig` | Backup: full downsizing curves and rejected samples |
+| `06_selected_flight_phases.csv` | Actual throttle, force, power and lift for minimum-MTOW designs |
+| `07_takeoff_thrust_split.png/.fig` | Takeoff thrust provided by the two prop groups |
+| `08_required_group_power.png/.fig` | Constraint-sized cruise and high-lift ratings; their sum is required total shaft power |
+| `cruise_prop_trade.mat`, `RUN_NOTES.txt` | Reusable selections/details, inputs and execution provenance |
+
+Run `check_cruiseproptrades2035(cruiseProps2035)` to validate an existing run.
+Without an argument it checks quiet constraint calls, unchanged original
+baseline sizing, a small four-case study, exports and the coupled balances.
+
+## Assumptions to state on the slide
+
+The 2035 targets are 400 Wh/kg at **pack** level, 90% usable energy,
+15 kW/kg motors, 14 kW/kg power electronics, 95%/97% respective efficiencies
+and a .80 wing-mass multiplier. These are optimistic conceptual assumptions.
+Landing assumes immediate reverse thrust equal to 8% of weight, still
+unverified by a propeller model. The separate clean-stall limit is disabled;
+the selected clean stall is approximately 74 kt. A passing powered-lift
+screen does not establish that the clean-stall target is met.
+
+Blade mass follows the existing diameter-cubed model. Folding hardware,
+nacelles and harness mass are not redesigned for each diameter. No RPM,
+torque, tip-speed, ground-clearance, battery-discharge, post-failure energy,
+CG/trim or detailed structural limits are added. No wingtip swirl-recovery
+drag credit is applied. These limitations explain what the conceptual study
+can decide and what must be resolved before a hardware selection.
+The last two historical paragraphs describe the October 10 model. The active
+model now includes the preliminary cruise swirl calculation and independent
+group ratings described above; the hardware-validation limitations remain.

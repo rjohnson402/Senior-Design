@@ -1,0 +1,591 @@
+function out = AEGAtrade_size(msn,WS,opt)
+%AEGATRADE_SIZE Close MTOW at a prescribed W/S, including battery-out power.
+% This is a separate sizing entry point; existing AEGAsize is untouched.
+% Uses existing mission/weight/normal-constraint models, actual layout, and
+% four mirrored battery failures. No geometric winglet/swirl/CG/trim model.
+if nargin < 3, opt = struct(); end
+d = struct('enforce_battery_out',true,'CD0_scale',1, ...
+    'initial_MTOW',2050,'max_MTOW',20000,'max_iterations',40, ...
+    'weight_tolerance',0.05,'eo',struct(),'evaluate_only_MTOW',[], ...
+    'retract_fraction',0,'cruise_deployment','optimal','cruise_disk_indices',[], ...
+    'mechanism_fixed_lb',0,'mechanism_lb_per_ft',0,'overlap_ft',0, ...
+    'overlap_lb_per_ft',0,'wing_reinforcement_fraction',0,'joint_drag_area_ft2',0, ...
+    'mechanism_build',[],'joint_seal',[],'wing_mass_factor',1,'mission_profile',[], ...
+    'cruise_CL_limit',msn.CLmax_clean,'retraction_policy','manual', ...
+    'coupled_flight_phases',false,'phase_energy_margin',.02,'cruise_stall_speed_factor',1.2);
+names = fieldnames(d);
+for j = 1:numel(names)
+    if ~isfield(opt,names{j}), opt.(names{j}) = d.(names{j}); end
+end
+validateattributes(WS,{'numeric'},{'scalar','positive','finite'});
+validateattributes(opt.CD0_scale,{'numeric'},{'scalar','positive','finite'});
+validateattributes(opt.wing_mass_factor,{'numeric'},{'scalar','positive','finite'});
+validateattributes(opt.cruise_CL_limit,{'numeric'},{'scalar','positive','finite','<=',msn.CLmax_clean});
+validateattributes(opt.retract_fraction,{'numeric'},{'scalar','real','finite','>=',0,'<',1});
+penalty_fields = {'mechanism_fixed_lb','mechanism_lb_per_ft','overlap_ft', ...
+    'overlap_lb_per_ft','wing_reinforcement_fraction','joint_drag_area_ft2'};
+for j = 1:numel(penalty_fields)
+    validateattributes(opt.(penalty_fields{j}),{'numeric'},{'scalar','real','finite','nonnegative'});
+end
+if isnumeric(opt.cruise_deployment)
+    validateattributes(opt.cruise_deployment,{'numeric'},{'scalar','real','finite','>=',0,'<=',1});
+else
+    assert(strcmp(opt.cruise_deployment,'optimal'),'AEGAtrade_size:deployment', ...
+        'cruise_deployment must be optimal or a deployed-stroke fraction between 0 and 1.');
+end
+assert(msn.use_blown_wind,'AEGAtrade_size:blowing','This trade requires use_blown_wind=true.');
+if opt.coupled_flight_phases
+    assert(~isempty(opt.mission_profile),'AEGAtrade_size:phases','Coupled phases require a mission profile.');
+end
+assert(opt.weight_tolerance > 0 && opt.max_iterations >= 2);
+assert(opt.initial_MTOW > msn.payload && opt.max_MTOW > opt.initial_MTOW);
+% Per-case changes remain in this local struct. Disk-area ratings match the
+% baseline all-operating blowing model. Equal ratings need a new normal model.
+if isfield(opt.eo,'rating_mode')
+    assert(strcmp(opt.eo.rating_mode,'disk-area'), ...
+        'AEGAtrade_size:ratings','Coupled sizing currently uses disk-area motor ratings.');
+end
+DG = opt.initial_MTOW;
+fixed_evaluation = ~isempty(opt.evaluate_only_MTOW);
+if fixed_evaluation
+    validateattributes(opt.evaluate_only_MTOW,{'numeric'},{'scalar','finite','>',msn.payload});
+    DG = opt.evaluate_only_MTOW;
+end
+history = nan(opt.max_iterations,2);
+converged = false;
+for it = 1:opt.max_iterations
+    out = evaluate(msn,DG,WS,opt);
+    returned = out.W.empty+msn.payload;
+    history(it,:) = [DG returned];
+    residual = returned-DG;
+    if fixed_evaluation
+        converged = abs(residual) < opt.weight_tolerance;
+        break
+    end
+    if abs(residual) < opt.weight_tolerance
+        converged = true;
+        break
+    end
+    candidate = returned;
+    if it > 1
+        oldr = history(it-1,2)-history(it-1,1);
+        if abs(residual-oldr) > 1e-10
+            candidate = DG-residual*(DG-history(it-1,1))/(residual-oldr);
+        end
+    end
+    % Safeguarded secant: prevent negative/excessively large weight steps.
+    if ~isfinite(candidate) || candidate <= msn.payload
+        candidate = DG+0.5*residual;
+    end
+    candidate = max(0.6*DG,min(1.5*DG,candidate));
+    if candidate > opt.max_MTOW
+        error('AEGAtrade_size:weightCeiling','Weight iteration exceeds %.0f lb; no reported optimum.',opt.max_MTOW);
+    end
+    DG = candidate;
+end
+% MTOW is the geometry evaluation weight so S*WS=MTOW exactly. The component
+% sum is reported separately, with a residual, rather than silently mixed.
+out.MTOW = history(it,1);
+out.MTOW_from_components = history(it,2);
+out.weight_residual_lb = history(it,2)-history(it,1);
+out.history = history(1:it,:);
+out.iterations = it;
+out.converged = converged;
+out.feasible = converged;
+out.status = 'ok';
+if ~converged
+    out.status = 'weight iteration did not converge';
+    if fixed_evaluation, out.status = 'fixed-weight evaluation; mission battery does not close weight'; end
+end
+out.performance_feasible = true;
+if msn.enforce_VS1 && out.VS1 > msn.VS1_op*(1+1e-8)
+    out.feasible = false; out.performance_feasible = false; out.status = 'enforced clean-stall limit exceeded';
+end
+if msn.enforce_land && ~out.con.landing_ok
+    out.feasible = false; out.performance_feasible = false; out.status = 'enforced landing-distance limit exceeded';
+end
+if out.cruise_CL > opt.cruise_CL_limit*(1+1e-8)
+    out.feasible = false; out.performance_feasible = false; out.status = 'selected cruise geometry exceeds operating CL limit';
+end
+if ~isempty(out.cruise_phases) && ~all([out.cruise_phases.clean_lift_pass])
+    out.feasible = false; out.performance_feasible = false;
+    out.status = 'a route or reserve cruise phase exceeds operating CL limit';
+end
+if isfield(out,'evaluation_options'), opt=out.evaluation_options; end
+if opt.coupled_flight_phases
+    t=out.operating_phases; screened=t.RequiredForSizing;
+    if ~all(t.LiftPass(screened) & t.PowerPass(screened) & t.ThrustBalancePass(screened))
+        out.feasible=false; out.performance_feasible=false;
+        out.status='a required phase fails actual-throttle lift, rating or approach force balance';
+    end
+end
+out.options = opt;
+end
+
+function out = evaluate(msn,DG,WS,opt)
+S = DG/WS; b = sqrt(msn.AR*S);
+assert(S > msn.SCOV,'AEGAtrade_size:coveredArea','Wing area is smaller than fixed covered area SCOV.');
+cr = 2*S/(b*(1+msn.TR));
+MAC = (2/3)*cr*(1+msn.TR+msn.TR^2)/(1+msn.TR);
+SHT = msn.Vh*MAC*S/msn.Lh;
+SVT = msn.Vv*b*S/msn.Lv;
+V = msn.Vkt*1.688;
+drag_build = AEGAparasiticdrag(msn,S,SHT,SVT);
+SWFUS = drag_build.fuselage_wetted_ft2;
+base_drag_area = opt.CD0_scale*drag_build.total_ft2;
+limits=struct();
+if strcmp(opt.retraction_policy,'lift-drag')
+    limits=AEGAretractionlimits2035(msn,DG,S,b,base_drag_area,opt);
+    opt.retract_fraction=limits.fraction;
+    msn.prop_y_fraction_side(end)=1-opt.retract_fraction;
+    % Flaps remain on the fixed core; no flap mechanism inside sliding tips.
+    msn.flap_span_frac=min(msn.flap_span_frac,1-opt.retract_fraction);
+end
+joint_full = opt.joint_drag_area_ft2*double(opt.retract_fraction>0);
+if ~isempty(opt.joint_seal)
+    jd = AEGAtelescopingjointdrag(msn,S,b,opt.retract_fraction,1,opt.joint_seal);
+    joint_full = jd.total_ft2;
+end
+% Low-speed phases use full extension and its joint geometry.
+CD0 = (base_drag_area+joint_full)/S;
+msn.SW = S; msn.SPAN = b; msn.WS = WS; msn.CD0 = CD0;
+[Deq,Adisc,~,~,layout] = AEGAtrade_prop(msn,S);
+msn.DG=DG;
+msn.reverse_active_area_ft2=2*layout.A_side(end);
+msn.reverse_cruise_rating_fraction=msn.reverse_active_area_ft2/Adisc;
+[CL_L,bw_L] = sizing_blown_wing(msn,DG,'landing',[]);
+
+eo = AEGAbatteryout(msn,struct('MTOW',DG,'SW',S,'CD0',CD0),opt.eo);
+selected = 1;
+if opt.enforce_battery_out, selected = 1:5; end
+[PWlow,critical] = max(eo.required_hp_lb(selected));
+row = selected(critical);
+if ~isfinite(PWlow)
+    error('AEGAtrade_size:failureScreen','Case %d: %s.',row-1,eo.status{row});
+end
+
+fun = @(P) takeoff_power_balance(P,msn,DG,CD0,WS,CL_L);
+hi = max(150,0.1*DG);
+for j = 1:30
+    if fun(hi) >= 0, break; end
+    hi = 2*hi;
+end
+if fun(hi) < 0
+    error('AEGAtrade_size:powerBracket','Normal power could not be bracketed.');
+end
+[Pnormal,~,flag] = fzero(fun,[0 hi]);
+assert(flag > 0,'AEGAtrade_size:normalPower','Normal power root did not converge.');
+Pscreen = PWlow*DG*0.745699872;
+q = 0.5*msn.rho_cr*V^2;
+cg = AEGAtelescopingcruise(msn,DG,S,b,base_drag_area,opt);
+CL = DG/(q*cg.area);
+CDi = CL^2/(pi*cg.AR*msn.e_osw);
+drag = cg.drag;
+cruise_indices = opt.cruise_disk_indices;
+if isempty(cruise_indices), cruise_indices = 1:msn.NPROP; end
+validateattributes(cruise_indices,{'numeric'},{'vector','integer','positive','<=',msn.NPROP});
+assert(numel(unique(cruise_indices))==numel(cruise_indices));
+% Existing power allocation is by disk area. Both mirrored cruise motors
+% must have enough assigned shaft rating, without borrowing inactive motors.
+A_motor = [layout.A_side layout.A_side];
+Acruise = sum(A_motor(cruise_indices));
+cruise_rating_fraction = Acruise/Adisc;
+etap = 2/(1+sqrt(1+drag/(q*Acruise)))*msn.prof;
+eta = msn.eta_m*msn.eta_pe*etap;
+Pcruise_shaft = drag*V/(737.56*etap);
+Pcruise_installed = Pcruise_shaft/cruise_rating_fraction;
+phases = [];
+if ~isempty(opt.mission_profile)
+    phases = AEGAmultispeedmission(msn,DG,S,b,base_drag_area,opt,Acruise);
+    Pcruise_installed = max([Pcruise_shaft phases.shaft_kW])/cruise_rating_fraction;
+end
+Pinstalled = max([Pnormal Pscreen Pcruise_installed]);
+[~,CL_TO,bw_TO,con] = takeoff_power_balance(Pinstalled,msn,DG,CD0,WS,CL_L);
+mission = AEGAmission(msn,DG,drag,eta,con,Pinstalled);
+if ~isempty(phases)
+    mission.E_range = sum([phases.energy_kWh]);
+    mission.E_required = mission.E_range;
+    mission.driver = char(opt.mission_profile.name);
+    if msn.enforce_ppl_xc && mission.E_ppl_xc>mission.E_range
+        mission.E_required = mission.E_ppl_xc;
+        mission.driver = 'PPL solo cross-country';
+    end
+    mission.phases = phases;
+end
+operating=table();
+if opt.coupled_flight_phases
+    for ip=1:3
+        msn=reverse_power_context(msn,Pinstalled,CL_L);
+        operating=AEGAflightphases2035(msn,DG,S,b,layout,CD0,Pinstalled,cg,phases,opt);
+        needed=max(operating.ShaftPower_kW(operating.RequiredForSizing & ...
+            operating.HighLiftThrottle_percent>0));
+        if needed<=Pinstalled*(1+1e-8), break; end
+        Pinstalled=needed*1.02;
+        [~,CL_TO,bw_TO,con]=takeoff_power_balance(Pinstalled,msn,DG,CD0,WS,CL_L);
+    end
+    msn=reverse_power_context(msn,Pinstalled,CL_L);
+    [mission,operating,phases]=AEGAcoupledmission2035(msn,DG,S,b,layout,CD0,Pinstalled,cg,phases,opt,mission);
+end
+st = struct('DG',DG,'SW',S,'SHT',SHT,'SVT',SVT,'PTO_kW',Pinstalled, ...
+    'Ebat',mission.E_required,'SWFUS',SWFUS,'Dprop',layout.D_weight_equiv);
+W = AEGAweight(msn,st);
+W.wing_before_technology = W.wing;
+wing_delta = (opt.wing_mass_factor-1)*W.wing;
+W.wing = W.wing+wing_delta;
+W.structure = W.structure+wing_delta;
+W.margin = W.margin+msn.fmarg*wing_delta;
+W.empty = W.empty+(1+msn.fmarg)*wing_delta;
+W.telescoping = 0;
+hardware = struct();
+if opt.retract_fraction > 0
+    if ~isempty(opt.mechanism_build)
+        hardware = AEGAtelescopingmechanism(msn,DG,S,b,opt.retract_fraction,opt.mechanism_build);
+        W.telescoping = hardware.total_lb;
+    else
+        stroke_each = opt.retract_fraction*b/2;
+        W.telescoping = opt.mechanism_fixed_lb+2*opt.mechanism_lb_per_ft*stroke_each ...
+            +2*opt.overlap_lb_per_ft*opt.overlap_ft+opt.wing_reinforcement_fraction*W.wing;
+    end
+    W.structure = W.structure+W.telescoping;
+    W.margin = W.margin+msn.fmarg*W.telescoping;
+    W.empty = W.empty+(1+msn.fmarg)*W.telescoping;
+end
+driver = ['normal ' con.driver];
+if Pscreen > Pnormal+1e-7
+    [~,jb] = max(eo.bounds_hp_lb(row,:));
+    if row == 1
+        driver = ['all-operating ' eo.bound_names{jb}];
+    else
+        driver = sprintf('battery %d out: %s',row-1,eo.bound_names{jb});
+    end
+end
+if Pcruise_installed > max(Pnormal,Pscreen)+1e-7
+    driver = 'active cruise motor rating';
+end
+out = struct('MTOW',DG,'W',W,'SW',S,'span',b,'MAC',MAC,'SHT',SHT,'SVT',SVT, ...
+    'WSR',WS,'CLmax',CL_L,'CLmax_TO',CL_TO,'CD0',CD0,'CDi',CDi, ...
+    'CD',drag/(q*cg.area),'LD',DG/drag,'drag',drag,'eta_prop',etap, ...
+    'eta_total',eta,'Ebat',mission.E_required,'pack_kWh',mission.E_required/msn.fusable, ...
+    'PTO_kW',Pinstalled,'Pnormal_kW',Pnormal,'Pscreen_kW',Pscreen, ...
+    'Pcruise_kW',mission.Pcruise_kW,'mission',mission,'con',con,'eo',eo, ...
+    'power_driver',driver,'Dprop',Deq,'Adisc',Adisc,'prop_layout',layout, ...
+    'cruise_geometry',cg,'cruise_CL',CL,'cruise_Adisc',Acruise, ...
+    'cruise_rating_fraction',cruise_rating_fraction,'Pcruise_shaft_kW',Pcruise_shaft, ...
+    'battery_fraction',W.battery/DG,'VS1',sqrt(2*WS/(msn.rho_SL*msn.CLmax_clean))/1.688, ...
+    'msn',msn,'blown_landing',bw_L,'blown_takeoff',bw_TO, ...
+    'base_drag_area_ft2',base_drag_area,'drag_build',drag_build, ...
+    'joint_extended_drag_area_ft2',joint_full, ...
+    'mechanism_components',hardware,'cruise_phases',phases, ...
+    'operating_phases',operating,'retraction_limits',limits,'evaluation_options',opt);
+end
+
+function [CL_blown,bw] = sizing_blown_wing(msn,DG,lift_cfg,PTO)
+
+KT2FPS = 1.688;
+W2KW = 737.56;
+
+rho = msn.rho_SL;
+
+%% wing geometry
+S_ref = msn.SW;
+b_ref = msn.SPAN;
+
+semi = b_ref/2;
+
+c_root = 2*S_ref/(b_ref*(1 + msn.TR));
+c_tip = msn.TR*c_root;
+
+y_root = msn.WFus/2;
+
+%% propeller geometry
+% aegaprop returns the root-to-tip layout for one wing
+
+[D_equiv,A_tot,~,~,layout] = AEGAtrade_prop(msn,S_ref);
+
+D_side = layout.D_side;
+y_prop = layout.y_side;
+
+A_side = pi*(D_side/2).^2;
+
+%% flight condition
+switch lift_cfg
+
+    case 'landing'
+
+        % evaluate blowing at the specified landing stall speed
+
+        u0 = msn.VS0*KT2FPS;
+
+        % calculate the unblown landing clmax from the actual tapered wing
+        % area covered by the flap
+
+        [CL_base,flap_area_frac] = landing_cl_base(msn,S_ref,b_ref);
+
+        CDi = CL_base^2/(pi*msn.AR*msn.e_osw);
+
+        % update flap drag using the actual flapped planform fraction
+
+        dCD_flap = msn.CD_flap_factor...
+                   *msn.flap_chord_frac...
+                   *flap_area_frac...
+                   *sind(msn.flap_def_L)^2;
+
+        q0 = 0.5*rho*u0^2;
+
+        D_land = q0*S_ref*(msn.CD0 + dCD_flap + CDi);
+
+        % thrust required during the specified descent angle
+
+        T_tot = max(D_land - DG*sind(msn.approach_angle),0);
+
+    case 'takeoff'
+
+        if isempty(PTO)
+            error('takeoff blown-wing calculation requires PTO.')
+        end
+
+        CL_base = msn.CLmax_TO;
+
+        flap_area_frac = NaN;
+
+        % evaluate takeoff blowing near liftoff speed
+
+        u0 = 1.1*sqrt(2*msn.WS/(rho*CL_base));
+
+        % convert installed shaft power into ideal slipstream power
+
+        Pid = msn.prof*PTO*W2KW;
+
+        rA = rho*A_tot;
+
+        % actuator-disk solution for induced velocity
+
+        vi = fzero(@(v) 2*rA*v*(u0 + v)^2 - Pid,[0 500]);
+
+        T_tot = 2*rA*vi*(u0 + vi);
+
+    otherwise
+
+        error('lift_cfg must be landing or takeoff.')
+end
+
+%% distribute thrust across the propellers
+% equal disk loading is assumed, so each prop receives thrust proportional
+% to its individual disk area
+
+T_side = (T_tot/2)*(A_side/sum(A_side));
+
+%% integrate local blown lift
+delta_CL = 0;
+
+S_blown_half = 0;
+
+M_half = 0;
+
+for j = 1:length(D_side)
+
+    Aprop = A_side(j);
+    Tprop = T_side(j);
+
+    %% local slipstream velocity
+    if Tprop > 0
+
+        ue = u0*sqrt(1 + Tprop/(0.5*rho*Aprop*u0^2));
+
+        q_ratio = (ue/u0)^2;
+
+        % approximate wake contraction between the propeller and wing
+
+        prop_factor = sqrt((u0 + ue)/(2*ue));
+
+    else
+
+        q_ratio = 1;
+        prop_factor = 1;
+    end
+
+    %% local portion of wing inside this slipstream
+    wake_width = prop_factor*D_side(j);
+
+    y1 = max(y_prop(j) - wake_width/2,y_root);
+    y2 = min(y_prop(j) + wake_width/2,semi);
+
+    Sstrip_half = trapezoid_wing_area(y1,y2,c_root,c_tip,semi);
+
+    %% local lift weighting
+    % landing gives extra cl weighting to the portion of the strip over the flap
+    % takeoff currently uses the common input clmax_to across the strip
+
+    if strcmp(lift_cfg,'landing')
+
+        lift_weight_half = local_landing_cl_area...
+            (msn,y1,y2,c_root,c_tip,semi,y_root);
+
+    else
+
+        lift_weight_half = CL_base*Sstrip_half;
+    end
+
+    %% add the dynamic-pressure lift increase
+    delta_CL = delta_CL...
+               + 2*lift_weight_half/S_ref*(q_ratio - 1);
+
+    S_blown_half = S_blown_half + Sstrip_half;
+
+    %% spanwise propulsive moment
+    % this is a load-location proxy rather than a full structural bending model
+
+    M_half = M_half + Tprop*y_prop(j);
+end
+
+%% total blown lift coefficient
+CL_blown = CL_base + delta_CL;
+
+CL_blown = min(CL_blown,msn.CLmax_cap);
+
+%% blown wing area
+blown_area_frac = min(2*S_blown_half/S_ref,1);
+
+%% normalized spanwise thrust moment
+% a value of 1 would correspond to all half-wing thrust acting at the tip
+% lower values mean propulsion is concentrated farther inboard
+
+if T_tot > 0
+    thrust_moment_norm = M_half/((T_tot/2)*semi);
+else
+    thrust_moment_norm = 0;
+end
+
+%% diagnostic outputs
+bw.CL_base = CL_base;
+bw.CL_blown = CL_blown;
+
+bw.blown_area_frac = blown_area_frac;
+
+bw.thrust_moment_norm = thrust_moment_norm;
+
+bw.Ttotal = T_tot;
+
+bw.Adisc = A_tot;
+
+bw.D_equiv = D_equiv;
+bw.D_side = D_side;
+bw.y_side = y_prop;
+
+bw.c_root = c_root;
+bw.c_tip = c_tip;
+
+bw.flap_area_frac = flap_area_frac;
+
+bw.WS_VS0_limit = 0.5*rho*(msn.VS0*KT2FPS)^2*CL_blown;
+
+end
+
+%% =========================================================================
+%% local function: unblown landing clmax
+% calculates how much actual tapered-wing planform lies inside the flap span
+% rather than assuming the original fixed 0.69 wing-area fraction
+
+function [CL_base,flap_area_frac] = landing_cl_base(msn,S_ref,b_ref)
+
+semi = b_ref/2;
+
+c_root = 2*S_ref/(b_ref*(1 + msn.TR));
+c_tip = msn.TR*c_root;
+
+y_root = msn.WFus/2;
+
+if isfield(msn,'flap_span_frac') && ~isempty(msn.flap_span_frac)
+    y_flap_end = msn.flap_span_frac*semi;
+else
+    y_flap_end = 0.80*semi;
+end
+
+y_flap_end = min(y_flap_end,semi);
+
+Aflap_half = trapezoid_wing_area...
+    (y_root,y_flap_end,c_root,c_tip,semi);
+
+flap_area_frac = 2*Aflap_half/S_ref;
+
+% local section clmax increment from the deployed flap
+
+dcl_flap_local = msn.dclmax_flap_L*msn.K_flap_sweep;
+
+% wing clmax equals clean clmax plus the flap increment weighted by area
+
+CL_base = msn.CLmax_clean...
+          + dcl_flap_local*flap_area_frac;
+
+end
+
+%% =========================================================================
+%% local function: cl-weighted area of one landing slipstream strip
+% part of a slipstream may lie over the flap and part may lie over clean wing
+% this function weights those two regions separately
+
+function CLA = local_landing_cl_area...
+    (msn,y1,y2,c_root,c_tip,semi,y_root)
+
+Astrip = trapezoid_wing_area...
+    (y1,y2,c_root,c_tip,semi);
+
+if isfield(msn,'flap_span_frac') && ~isempty(msn.flap_span_frac)
+    y_flap_end = msn.flap_span_frac*semi;
+else
+    y_flap_end = 0.80*semi;
+end
+
+y_flap_end = min(y_flap_end,semi);
+
+% portion of this strip that lies inside the flap span
+
+yf1 = max(y1,y_root);
+yf2 = min(y2,y_flap_end);
+
+Aflap = trapezoid_wing_area...
+    (yf1,yf2,c_root,c_tip,semi);
+
+dcl_flap_local = msn.dclmax_flap_L*msn.K_flap_sweep;
+
+% clean lift contribution applies over the entire strip
+% flap increment only applies to the portion covered by the flap
+
+CLA = msn.CLmax_clean*Astrip...
+      + dcl_flap_local*Aflap;
+
+end
+
+%% =========================================================================
+%% local function: tapered-wing strip area
+% local chord varies linearly from root to tip
+%
+% integrating c(y) between y1 and y2 gives the actual planform area under
+% a propeller slipstream
+
+function A = trapezoid_wing_area...
+    (y1,y2,c_root,c_tip,semi)
+
+if y2 <= y1
+    A = 0;
+    return
+end
+
+slope = (c_tip - c_root)/semi;
+
+A = c_root*(y2 - y1)...
+    + 0.5*slope*(y2^2 - y1^2);
+
+end
+function [residual,CL_TO,bw_TO,con] = takeoff_power_balance(P,msn,DG,CD0,WS,CL_L)
+[CL_TO,bw_TO] = sizing_blown_wing(msn,DG,'takeoff',P);
+msn=reverse_power_context(msn,P,CL_L);
+con = AEGAconstraint(msn,CD0,false,WS,CL_L,CL_TO);
+residual = P - con.PW_kWkg*DG/2.20462;
+end
+
+function m=reverse_power_context(m,P,CL_L)
+m.landing_CL_for_roll=CL_L;
+fraction=.5; if isfield(m,'reverse_rating_fraction'), fraction=m.reverse_rating_fraction; end
+m.reverse_available_shaft_kW=fraction*P*m.reverse_cruise_rating_fraction;
+end

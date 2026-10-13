@@ -1,0 +1,40 @@
+# Geometry for the next aerodynamic model
+
+Use this fixed AR18 wing as the next clean reference. It is a rounded, landing-feasible analysis configuration at W/S 24 lb/ft², with no reverse-thrust credit. Keep taper .35 for the first run; the optimizer's .15 endpoint is a sensitivity until tip stall, spar depth and control layout are checked.
+
+| Item | Value | Basis |
+|---|---:|---|
+| Sizing mass | 2304 lb | Closed 250-nm / 120-KTAS / 45-minute-reserve reference |
+| Wing reference area, including buried area | 96.00 ft² | Gross planform |
+| Full span | 41.57 ft | AR18 |
+| Root chord at centerline | 3.421 ft | Trapezoid |
+| Tip chord | 1.197 ft | Taper .35 |
+| Mean aerodynamic chord | 2.488 ft | Use as Cref |
+| Quarter-chord / leading-edge sweep | 2.00° / 3.53° | FLOPS uses quarter chord |
+| Wing thickness/chord | 15% | Existing assumption; airfoil not selected here |
+| Wing incidence / twist / dihedral | 1° / 0° / 3° | Analysis placeholders; incidence retained from teammate note |
+| Fuselage length × width × depth | 28.0 × 4.00 × 4.17 ft | Retained packaging placeholders, not optimized |
+| Horizontal tail area / arm | 7.96 ft² / 18.0 ft | Vh = .60; arm between aerodynamic centers |
+| Horizontal tail AR / span / taper | 4 / 5.64 ft / .50 | AR and taper are new geometry placeholders |
+| Vertical tail area / arm | 8.40 ft² / 19.0 ft | Vv = .040; AC-to-AC arm |
+| Vertical tail AR / height / taper | 1.50 / 3.55 ft / .50 | Provisional T-tail; taper placeholder |
+| Cruise prop diameter | 2 × 4.5 ft | Retained large-prop reference; compare 3.0 ft separately |
+| High-lift prop diameter | 6 × 2.8 ft | Retained common reference |
+| Prop hub distances from centerline, each side | 3.75, 7.10, 10.45, 20.78 ft | Cruise hubs at wing tips; disks extend beyond span |
+| Flaps, each side | y = 2.00–16.63 ft; 32% local chord | 40° landing deflection; verify hinge/control allocation |
+
+Modeled landing distance: 1462 ft; clean stall: 66.6 kt. This is a powered-lift aircraft sizing screen; it does not establish an idle-power certification stall result. The separate 59-kt clean-stall target remains disabled.
+
+## Request to the aerodynamic teammate
+
+Use Sref = 95.998 ft², Bref = 41.569 ft, Cref = 2.488 ft for all aircraft coefficients. At 120 KTAS / 5000 ft, Mach is about 0.185 and Reynolds number based on MAC is 2.80 million. The previous export used Mach .001, Re 3.5 million and Vinf 100 in unspecified units; explicitly set dimensional units for the next run.
+
+Keep the existing airfoil for the first controlled geometry comparison. Run alpha -4° to 10° in 1° steps, refining around cruise CL 0.571. Check wake/mesh convergence and report near-field and wake coefficients separately. Return the native model, geometry references, analysis units, mesh/wake settings, and a parasite-drag component buildup identifying fuselage, wing, tails, gear, nacelles and folded props. Confirm whether the previous summary Cd0 .0202 covers the whole aircraft and whether tail trim is included.
+
+Run the clean unpowered polar first, with the six high-lift propellers folded/stowed. Then run cruise prop-on cases at representative thrust and separate flap/blowing cases. Apply any prop-on drag benefit only after subtracting a matched prop-off case with a consistent thrust/drag convention. Do not infer CLmax from the existing 0–8° panel sweep.
+
+For the telescoping comparison, use AR18 at full extension, fixed motors at the core ends, and full-span climb/landing. Let the optimizer provide a separate complete geometry; cutting 20% off this fixed reference without resizing or checking prop clearance is not an equivalent candidate.
+
+Absolute wing position, CG, tail incidence, prop axial offset, cooling openings and landing-gear clearances still need layout/trim decisions. Do not treat old concept_variable_span models as this updated geometry.
+
+[Planform sketch](input_review/reference_planform.png) · [Geometry values](input_review/geometry.json) · [Assumption review](docs/INPUT_ASSUMPTIONS.md) · [Updated trades](CURRENT_TRADE_REVIEW.md)

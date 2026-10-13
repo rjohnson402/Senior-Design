@@ -1,0 +1,41 @@
+function refresh_coupledflight_exports(folder)
+% Refresh selected operating reports/visual data without repeating the search.
+% Re-evaluate selected geometries and require unchanged mass/energy closure.
+load(fullfile(folder,'optimized_wing_comparison.mat'),'saved');
+s=saved; s.operating_phases=table(); data=repmat(struct(),height(s.best),1);
+for j=1:height(s.best)
+    previous=s.best_details{j};
+    out=AEGAtrade_size(previous.msn,s.best.WS_lb_ft2(j),previous.options);
+    assert(out.feasible && abs(out.MTOW-s.best.MTOW_lb(j))<.01);
+    assert(abs(out.Ebat-s.best.RequiredUsable_kWh(j))<.01);
+    s.best_details{j}=out;
+    t=out.operating_phases;
+    t=addvars(t,repmat(s.best.Profile(j),height(t),1),repmat(s.best.Family(j),height(t),1), ...
+        'Before',1,'NewVariableNames',{'Profile','Family'});
+    s.operating_phases=[s.operating_phases; t]; %#ok<AGROW>
+    a=s.selected_speed_sweep(s.selected_speed_sweep.Profile==s.best.Profile(j) & ...
+        s.selected_speed_sweep.Family==s.best.Family(j),:);
+    data(j).label=char(s.best.Profile(j)+" | "+s.best.Family(j));
+    data(j).weight=out.MTOW; data(j).full_area=out.SW;
+    data(j).full_span=out.span; data(j).full_ar=out.msn.AR; data(j).taper=out.msn.TR;
+    data(j).retraction=out.options.retract_fraction;
+    data(j).rho=out.msn.rho_cr; data(j).clean_cl=out.msn.CLmax_clean;
+    data(j).eff=out.msn.eta_m*out.msn.eta_pe;
+    data(j).cruise_each_kW=out.PTO_kW*out.cruise_rating_fraction/2;
+    data(j).high_y=out.prop_layout.y_side(1:3);
+    data(j).phases=table2struct(t); data(j).sweep=table2struct(a);
+end
+check_coupledflight2035(s);
+saved=s; save(fullfile(folder,'optimized_wing_comparison.mat'),'saved');
+writetable(s.operating_phases,fullfile(folder,'08_all_flight_phases.csv'));
+fid=fopen(fullfile(folder,'10_visual_preview.json'),'w');
+assert(fid>=0); guard=onCleanup(@() fclose(fid)); fprintf(fid,'%s',jsonencode(data));
+s.options.figure_visible='off'; fig=AEGAplotflightphases2035(s);
+if isprop(fig,'Theme'), fig.Theme='light'; end
+set(findall(fig,'Type','axes'),'Color','w','XColor','k','YColor','k');
+set(findall(fig,'Type','text'),'Color','k');
+set(findall(fig,'Type','legend'),'Color','w','TextColor','k');
+exportgraphics(fig,fullfile(folder,'09_throttle_and_blown_lift.png'),'Resolution',180);
+savefig(fig,fullfile(folder,'09_throttle_and_blown_lift.fig')); close(fig);
+fprintf('PASS: selected geometries re-evaluated unchanged; refreshed operating reports and visual data.\n');
+end

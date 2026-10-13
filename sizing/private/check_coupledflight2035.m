@@ -1,0 +1,67 @@
+function check_coupledflight2035(s)
+% Independent physical balances, geometry, energy and schedule checks.
+% Accept a completed study to avoid repeating a full optimization.
+if nargin<1
+    loaded=load(fullfile(AEGAroot(),'trade_results', ...
+        'coupled_smoke','optimized_wing_comparison.mat'),'saved'); s=loaded.saved;
+end
+assert(all(s.best.PassesScreen) && all(s.best.PhaseSchedulePass));
+for j=1:height(s.best)
+    out=s.best_details{j}; t=out.operating_phases; m=out.msn;
+    A=[out.prop_layout.A_side out.prop_layout.A_side]; share=A/sum(A);
+    assert(abs(out.weight_residual_lb)<out.options.weight_tolerance);
+    assert(abs(sum(t.EnergyWithAllowance_kWh)-out.mission.E_range)<1e-8);
+    assert(abs(out.mission.project_route_nm-out.msn.range)<1e-8);
+    assert(abs(out.Ebat-max(out.mission.E_range,out.mission.E_ppl_xc))<1e-8);
+    steady=t.RequiredForSizing;
+    assert(all(t.LiftPass(steady) & t.PowerPass(steady) & t.ThrustBalancePass(steady)));
+    cruise=startsWith(t.Phase,"Route leg ") | t.Phase=="Reserve";
+    assert(all(t.HighLiftThrottle_percent(cruise)==0));
+    assert(all(t.CLmaxCredited(cruise)==m.CLmax_clean));
+    assert(all(t.StallSpeedFactor(cruise)>=1.2-1e-7));
+    assert(all(t.HighLiftThrottle_percent<=100+1e-6));
+    assert(all(t.CruiseThrottle_percent<=100+1e-6));
+    assert(all(t.Deployment(~cruise)==1));
+    assert(abs(t.HighLiftThrottle_percent(t.Phase=="Takeoff")-100)<1e-8);
+    app=t(t.Phase=="Approach",:);
+    assert(abs(app.Thrust_lb-app.RequiredThrust_lb)<max(1,.001*out.MTOW));
+    % Power, induced velocity and thrust satisfy actuator-disk energy balance.
+    take=t(t.Phase=="Takeoff",:); V=take.Speed_ktas*1.688;
+    thrust=take.Thrust_lb; rhoA=m.rho_SL*sum(A);
+    if isfield(m,'prop_rating_each_kW')
+        state=AEGAblownstate2035(m,out.SW,out.span,out.prop_layout,V,m.rho_SL,m.prop_rating_each_kW,'takeoff',out.options.retract_fraction,1);
+        each=state.thrust_each_lb;
+        vi=.5*(sqrt(V^2+2*each./(m.rho_SL*A))-V);
+        assert(abs(sum(each.*(V+vi))/(m.prof*737.56)-take.ShaftPower_kW)<1e-7);
+        assert(abs(sum(each)-thrust)<1e-8);
+    else
+        vi=.5*(sqrt(V^2+2*thrust/rhoA)-V);
+        assert(abs(thrust*(V+vi)/(m.prof*737.56)-take.ShaftPower_kW)<1e-7);
+    end
+    zero=AEGAblownstate2035(m,out.SW,out.span,out.prop_layout,V,m.rho_SL,zeros(1,8),'takeoff',out.options.retract_fraction,1);
+    assert(zero.DeltaCL==0 && zero.thrust_lb==0);
+    assert(take.CLmaxBlown>zero.CL_blown);
+    for f=[0 .35 1]
+        o=out.options; o.cruise_deployment=f;
+        g=AEGAtelescopingcruise(m,out.MTOW,out.SW,out.span,out.base_drag_area_ft2,o);
+        z=AEGAblownstate2035(m,out.SW,out.span,out.prop_layout,V,m.rho_SL, ...
+            .5*out.PTO_kW*share,'clean',o.retract_fraction,f);
+        assert(abs(z.visible_area_ft2-g.area)<1e-8);
+    end
+    if s.best.Family(j)=="Adaptive"
+        h=out.retraction_limits;
+        assert(h.fraction>=s.options.retraction_bounds(1)-1e-8);
+        assert(h.fraction<=h.fraction_ceiling+1e-8);
+        m.Vkt=h.cruise_reference_speed_ktas; o=out.options; o.cruise_deployment=0;
+        g=AEGAtelescopingcruise(m,out.MTOW,out.SW,out.span,out.base_drag_area_ft2,o);
+        assert(g.area>=h.minimum_cruise_area_ft2-1e-8);
+        assert(abs(out.prop_layout.y_side(end)-(1-h.fraction)*out.span/2)<1e-8);
+    end
+    % Independently integrate actual shaft power times time, allowing only
+    % the shared conversion convention in the legacy force-distance model.
+    low=~cruise;
+    energy=sum(t.BatteryPower_kW(low).*t.Duration_hr(low))*(1+out.options.phase_energy_margin);
+    assert(abs(energy-sum(t.EnergyWithAllowance_kWh(low)))<1e-8);
+end
+fprintf('PASS: coupled phases; power/thrust balance; actual-throttle lift; area/nesting/packing limits; two-motor cruise; route distance and energy closure.\n');
+end

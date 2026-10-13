@@ -1,0 +1,27 @@
+# Reverse-thrust trade for the trainer
+
+This compares the AR18, taper .35, two 4.5-ft cruise / six 2.8-ft high-lift reference, re-closing weight, power and mission energy for each W/S. Reverse capability is conditional on a suitable negative-pitch propeller design, not a demonstrated hardware capability.
+
+Nominal assumptions: reverse target 5% of weight; 2-second delay; 1-second ramp; thrust fades below 15 kt to zero at 5 kt; two cruise props only. Added hardware is 9 kg (19.8 lb), with the normal weight margin applied. Two 4-kg hub/pitch/beta increments and 1-kg control allowance are optimistic parts-budget estimates, not manufacturer masses.
+
+Requested shaft power is 15 kW for 3/5% cases and 25 kW for 8%. It is capped at half the cruise pair's assigned peak rating. A static momentum screen with an assumed .50 figure of merit further caps reverse thrust. This is not a reverse Ct/Cp map and does not prove thrust at touchdown advance ratio. Reverse consumes battery energy; no regeneration is credited. The rollout's energy is included once per landing in the project and three-stop missions. No reverse thrust or lift benefit is applied in flight.
+
+| Case | Best passing W/S | MTOW, lb | Change, lb | Landing, ft | Same aircraft without reverse, ft | Added hardware, lb |
+|---|---:|---:|---:|---:|---:|---:|
+| No reverse | 25.25 | 2277.4 | +0.0 | 1495 | 1495 | 0.0 |
+| 3% target | 26.50 | 2294.3 | +16.9 | 1498 | 1527 | 19.8 |
+| 5% nominal target | 27.25 | 2283.2 | +5.8 | 1498 | 1547 | 19.8 |
+| 8% optimistic target | 28.25 | 2270.6 | -6.8 | 1497 | 1574 | 19.8 |
+| 5% target, heavier hardware | 27.25 | 2304.2 | +26.8 | 1498 | 1547 | 30.9 |
+| 5% target, 3-second delay | 26.75 | 2290.4 | +13.0 | 1499 | 1534 | 19.8 |
+| Reversing hardware, reverse unavailable | 25.25 | 2316.0 | +38.7 | 1494 | 1494 | 19.8 |
+
+The no-reverse distance evaluates the SAME installed-hardware aircraft after disabling reverse; it is not the separately resized no-reverse optimum. The last row also re-sizes the hardware-equipped aircraft for unavailable reverse.
+
+For a trainer, retain landing capability without reverse and treat it as an optional stopping aid. Reversing pitch adds hardware and maintenance, requires a ground-only interlock and matched commands, and creates asymmetric braking if one outboard prop reverses alone. The sizing model does not establish those controls or an aborted-reverse go-around transition.
+
+[Hartzell Manual 168, external beta system](https://hartzellprop.com/wp-content/uploads/2012/12/168-0000-R03-AW.pdf) describes dedicated pitch/reverse mechanisms. [MT's electric-prop range](https://www.mt-propeller.com/mt/en/products/propeller-systems/electric-propellers-1086/) states its optional reverse application is airships; this is not an available certified trainer solution. [NACA negative-thrust/torque tests](https://ntrs.nasa.gov/citations/19930091716) establish that the operating regime depends on blade angle and speed. None supplies our numeric thrust or mass assumptions.
+
+![Reverse trade](trade_results/reverse_20261011_182126_176/05_reverse_trade.png)
+
+Run `run_reversetrades2035` from the sizing folder. Use `AEGAreversecase2035` to select the modeled option. Ordinary AEGAinputs remains the no-reverse trainer reference; the complete runner now includes this reverse comparison.

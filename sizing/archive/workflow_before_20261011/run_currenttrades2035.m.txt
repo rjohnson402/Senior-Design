@@ -1,0 +1,11 @@
+% Re-run and review all three studies from the current AEGAinputs.
+% Each runner saves its own complete timestamped numerical package.
+% Supports launching this script by its full path from another folder.
+addpath(fileparts(mfilename('fullpath')));
+run_wingtrades2035
+run_optimizedwingcomparison2035
+run_cruiseproptrades2035
+check_currenttrades2035(trade2035,optimizedWings2035,cruiseProps2035);
+currentReviewFolder=AEGAexportreview2035(trade2035,optimizedWings2035,cruiseProps2035);
+fprintf('Updated three-study review: %s\n',currentReviewFolder);
+run_reversetrades2035

@@ -1,0 +1,54 @@
+function check_currenttrades2035(wing,wings,props)
+% Prove current inputs propagate; verify selected designs' physical balances.
+if nargin==0
+    m=AEGAinputs(); m.range=275; m.reserve=35; m.Vkt=125; m.whkg=375;
+    m.fusable=.88; m.kWkg_m=13; m.kWkg_pe=12; m.eta_m=.94; m.eta_pe=.96;
+    m.payload=420; m.XL=27; m.WFus=4.2; m.TR=.42;
+    w=struct('WS',[20 24],'AR_values',[16 18],'AR_refine_step',0, ...
+        'do_AR',true,'do_drag',false,'do_climb',false,'doplot',false);
+    wing=AEGAwingtrades(m,w);
+    profiles=AEGAwingcomparisonprofiles(m);
+    o=struct('profiles',profiles(1),'WS_bounds',[20 24],'WS_grid',[20 24], ...
+        'fixed_AR_bounds',[16 18],'fixed_AR_grid',[16 18], ...
+        'taper_bounds',[.2 .5],'taper_grid',[.2 .5], ...
+        'refine',false,'doplot',false,'speed_grid',m.Vkt);
+    wings=AEGAoptimizewings2035(m,o);
+    p=struct('WS',[20 24],'cruise_diameter_ft',4.5,'high_lift_diameter_ft',[2.4 2.8], ...
+        'refine',false,'doplot',false,'verbose',false);
+    props=AEGAcruiseproptrades2035(m,p);
+end
+m=wing.source_inputs;
+assert(isequaln(m,wings.source_inputs) && isequaln(m,props.source_inputs));
+fields={'range','reserve','Vkt','whkg','fusable','kWkg_m','kWkg_pe', ...
+    'eta_m','eta_pe','payload','XL','WFus','reverse_TW','enforce_VS1', ...
+    'drag_buildup_scale','e_osw','wing_mass_factor'};
+for field=fields
+    assert(isequaln(wing.inputs.(field{1}),m.(field{1})));
+    assert(isequaln(wings.inputs.(field{1}),m.(field{1})));
+    assert(isequaln(props.inputs.(field{1}),m.(field{1})));
+end
+assert(wing.inputs.TR==m.TR && props.inputs.TR==m.TR);
+assert(wing.inputs.enforce_land && wings.inputs.enforce_land && props.inputs.enforce_land);
+assert(wings.options.profiles(1).route_speed_ktas==m.Vkt);
+assert(wings.options.profiles(1).reserve_speed_ktas==m.Vkt);
+assert(sum(wings.options.profiles(1).route_distance_nm)==m.range);
+assert(~isempty(wing.best) && wing.best.LandingCheckPass);
+assert(all(wings.best.PassesScreen & wings.best.LandingCheckPass));
+assert(all(props.best.PassesScreen & props.best.LandingCheckPass));
+check_coupledflight2035(wings); check_cruiseproptrades2035(props);
+selected=wing.AR_best(wing.AR_best.PassesScreen & strcmp(wing.AR_best.Selection,'Minimum MTOW'),:);
+assert(~isempty(selected) && all(selected.PhaseSchedulePass));
+v=struct('best',table(true(height(selected),1),true(height(selected),1), ...
+    repmat("Fixed",height(selected),1),'VariableNames',{'PassesScreen','PhaseSchedulePass','Family'}), ...
+    'best_details',{cell(height(selected),1)});
+for j=1:height(selected)
+    out=wing.details{selected.DetailIndex(j)}.result; v.best_details{j}=out;
+    assert(isequal(out.options.cruise_disk_indices,[4 8]));
+    assert(abs(out.msn.Vkt-m.Vkt)<1e-12 && out.msn.reserve==m.reserve);
+end
+check_coupledflight2035(v);
+stations=props.best_details{1}.prop_layout.y_side(1:3);
+assert(max(abs(wings.best_details{1}.prop_layout.y_side(1:3)-stations))<1e-10);
+assert(max(abs(v.best_details{1}.prop_layout.y_side(1:3)-stations))<1e-10);
+fprintf('PASS: all three studies inherit current mission/technology/airframe inputs, use common hubs and coupled phases, and enforce landing.\n');
+end

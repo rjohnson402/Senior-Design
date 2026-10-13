@@ -1,0 +1,31 @@
+% Run in MATLAB: run_telescopingtrades2035
+% AR 18; full span for takeoff/climb/landing; power-adaptive cruise.
+msn = AEGAinputs();
+opt = struct();
+opt.AR_max = 18;
+opt.WS_max = msn.WS_design;      % full-span design W/S, lb/ft^2
+opt.retract_fractions = 0:.025:.20; % 0-20% of maximum span can retract
+opt.range_fixed_nm = msn.range;  % 250 nm currently; set 300 for assigned range
+opt.MTOW_fixed_lb = [];          % [] uses sized non-telescoping reference
+opt.cruise_deployment = 'optimal'; % power optimum at design speed for mission sizing
+[opt.mechanism_builds,opt.seal_cases,opt.technology] = AEGAtelescopingassumptions2035();
+opt.nominal_build_index = 3;    % lightweight target; seven explicit component cases
+opt.nominal_seal_index = 1;     % flush sealed target; three independent drag cases
+opt.do_drag_sensitivity = true;
+opt.adaptive_speeds_ktas = 80:5:200; % >170 points are numerical sensitivity only
+opt.additional_hardware_allowances_lb = 0:2:30; % independent extra-weight sensitivity
+% Defaults: 400 Wh/kg PACK, 90% usable, 20% lighter already-composite wing.
+% Component targets / allowables / seals are editable in the assumptions file.
+% No zero-weight moving mechanism or blanket 10% whole-wing reinforcement.
+
+opt.high_lift_diameter_ft = 2.8; % hardware diameters held fixed across the trade
+opt.cruise_diameter_ft = 4.5;
+opt.high_lift_hub_fractions = [.21 .39 .57]; % full-semispan stations, fixed in flight
+opt.enforce_battery_out = true; % inherited four mirrored-pair power screens
+opt.size_options = struct('weight_tolerance',.01);
+opt.doplot = true;
+opt.save_plots = true;
+opt.output_dir = fullfile(fileparts(mfilename('fullpath')),'trade_results', ...
+    ['telescoping_' char(datetime('now','Format','yyyyMMdd_HHmmss_SSS'))]);
+telescoping2035 = AEGAtelescopingtrades(msn,opt);
+fprintf('Saved telescoping study to:\n%s\n',opt.output_dir);

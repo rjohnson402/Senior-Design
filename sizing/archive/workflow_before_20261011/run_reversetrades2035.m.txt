@@ -1,0 +1,11 @@
+% Reverse-pitch option: weight, delayed ground braking, power and energy.
+addpath(fileparts(mfilename('fullpath')));
+msn=AEGAinputs();
+reverseOptions=struct('WS',unique([20:2:36 msn.WS_design 25.25 31.25]), ...
+    'refine',true,'doplot',true,'output_dir', ...
+    fullfile(fileparts(mfilename('fullpath')),'trade_results', ...
+    ['reverse_' char(datetime('now','Format','yyyyMMdd_HHmmss_SSS'))]));
+reverse2035=AEGAreversetrades2035(msn,reverseOptions);
+check_reverse2035(reverse2035);
+fprintf('Saved reverse comparison: %s\n',reverseOptions.output_dir);
+if usejava('desktop'), openfig(fullfile(reverseOptions.output_dir,'05_reverse_trade.fig'),'visible'); end

@@ -1,0 +1,582 @@
+function study = AEGAwingtrades(msn,opt)
+%AEGAWINGTRADES Re-sized wing, battery, mission, and battery-out trades.
+if nargin < 1 || isempty(msn), msn = AEGAinputs(); end
+if nargin < 2, opt = struct(); end
+if isfield(opt,'replot_data')
+    study=opt.replot_data;
+    if study.options.doplot
+        [figs,names]=draw_results(study);
+        if study.options.save_plots
+            for j=1:numel(figs)
+                exportgraphics(figs(j),fullfile(study.options.output_dir,[names{j} '.png']),'Resolution',180);
+                savefig(figs(j),fullfile(study.options.output_dir,[names{j} '.fig']));
+            end
+        end
+    end
+    return
+end
+source_inputs=msn; cfg=AEGAstudysettings2035(msn);
+d = struct('WS',cfg.WS,'AR_values',cfg.AR, ...
+    'AR_refine_step',.5,'AR_refine_half_width',2, ...
+    'CD0_scales',[1 .95 .90 .85],'climb_gradients',[0 .01 .02 .03], ...
+    'pack_Whkg_values',unique([300 350 msn.whkg 450]), ...
+    'range_nm_values',unique([150 200 msn.range 300]), ...
+    'reserve_min_values',unique([30 msn.reserve 60]), ...
+    'eo',struct(),'do_AR',true,'do_drag',true,'do_climb',true, ...
+    'do_battery',false,'do_mission',false,'doplot',true, ...
+    'save_plots',false,'output_dir','', ...
+    'current_configuration',true,'enforce_landing',cfg.enforce_landing, ...
+    'size_options',struct());
+names = fieldnames(d);
+for j = 1:numel(names)
+    if ~isfield(opt,names{j}), opt.(names{j}) = d.(names{j}); end
+end
+baseSizing=opt.size_options;
+if opt.current_configuration
+    cfg.enforce_landing=opt.enforce_landing;
+    [msn,baseSizing]=AEGAstudycase2035(msn,cfg);
+    for name=fieldnames(opt.size_options).'
+        baseSizing.(name{1})=opt.size_options.(name{1});
+    end
+end
+if ~isfield(opt.eo,'selected_climb_gradient'), opt.eo.selected_climb_gradient = .02; end
+assert(~isfield(opt.eo,'include_climb') || opt.eo.include_climb, ...
+    'AEGAwingtrades:climb','These trades include climb; set gradient to zero for a level-flight case.');
+opt.eo.include_climb = true;
+validateattributes(opt.WS,{'numeric'},{'vector','positive','finite'});
+validateattributes(opt.AR_values,{'numeric'},{'vector','positive','finite'});
+validateattributes(opt.AR_refine_step,{'numeric'},{'scalar','nonnegative','finite'});
+validateattributes(opt.AR_refine_half_width,{'numeric'},{'scalar','positive','finite'});
+validateattributes(opt.CD0_scales,{'numeric'},{'vector','positive','finite'});
+validateattributes(opt.climb_gradients,{'numeric'},{'vector','nonnegative','finite'});
+validateattributes(opt.pack_Whkg_values,{'numeric'},{'vector','positive','finite'});
+validateattributes(opt.range_nm_values,{'numeric'},{'vector','positive','finite'});
+validateattributes(opt.reserve_min_values,{'numeric'},{'vector','nonnegative','finite'});
+assert(~opt.save_plots || (opt.doplot && ~isempty(opt.output_dir)), ...
+    'AEGAwingtrades:export','Saving plots requires doplot=true and an output_dir.');
+opt.WS = unique(opt.WS(:).');
+opt.AR_values = unique([opt.AR_values(:).' msn.AR]);
+opt.pack_Whkg_values = unique([opt.pack_Whkg_values(:).' msn.whkg]);
+opt.range_nm_values = unique([opt.range_nm_values(:).' msn.range]);
+opt.reserve_min_values = unique([opt.reserve_min_values(:).' msn.reserve]);
+% Restore any presentation palette after this study's summary figures.
+oldOrder = get(groot,'defaultAxesColorOrder');
+restoreGraphics = onCleanup(@() set(groot,'defaultAxesColorOrder',oldOrder));
+cache = containers.Map('KeyType','char','ValueType','any');
+details = {}; caseCount = 0;
+gradient = opt.eo.selected_climb_gradient;
+rows = repmat(blank(),0,1);
+fprintf('\n2035 TRADES: each sample closes MTOW; four configured battery-bank failures.\n');
+fprintf('Inputs: AR %.2f, pack %.0f Wh/kg, %.0f nm + %.0f min reserve.\n', ...
+    msn.AR,msn.whkg,msn.range,msn.reserve);
+if opt.current_configuration
+    fprintf('Current model: two cruise props; actual-throttle phases; common fixed high-lift hubs.\n');
+else
+    fprintf('Legacy configuration explicitly requested: original sizing architecture.\n');
+end
+for enforce = [false true]
+    group = 'All operating';
+    if enforce, group = 'One battery out'; end
+    for ws = opt.WS
+        rows(end+1,1) = run_case(group,ws,msn.AR,1,gradient,enforce); %#ok<AGROW>
+    end
+end
+study.main = struct2table(rows);
+study.best = best_row(study.main);
+if isempty(study.best)
+    warning('AEGAwingtrades:noFeasible','No converged passing battery-out case; inspect study.main.Status.');
+    chosenWS = opt.WS(ceil(numel(opt.WS)/2));
+else
+    chosenWS = study.best.WS_lb_ft2;
+    fprintf('\nLowest MTOW among sampled passing battery-out cases:\n');
+    disp(study.best(:,{'WS_lb_ft2','MTOW_lb','Wing_ft2','Span_ft','Installed_kW','Pack_kWh','Driver'}));
+end
+
+rows = repmat(blank(),0,1);
+if opt.do_AR
+    for ar = opt.AR_values
+        firstRow = numel(rows)+1;
+        for ws = opt.WS
+            rows(end+1,1) = run_case('AR sensitivity',ws,ar,1,gradient,true); %#ok<AGROW>
+        end
+        % Refine near each coarse minimum in mass, battery and installed power.
+        % Keep the original endpoints: a minimum at an endpoint remains bounded
+        % by the sampled domain, not a declared optimum.
+        if opt.AR_refine_step > 0
+            coarse = struct2table(rows(firstRow:end));
+            centers = [];
+            for objective = {'MTOW_lb','Pack_kWh','Installed_kW'}
+                best = best_row(coarse,objective{1});
+                if ~isempty(best), centers(end+1) = best.WS_lb_ft2; end %#ok<AGROW>
+            end
+            % Also resolve the calculated weight trough beyond feasibility.
+            % These cases stay rejected; refining them never relaxes a screen.
+            calculated=coarse(coarse.Converged & isfinite(coarse.MTOW_lb),:);
+            if ~isempty(calculated)
+                [~,minimum]=min(calculated.MTOW_lb);
+                centers(end+1)=calculated.WS_lb_ft2(minimum); %#ok<AGROW>
+            end
+            best = best_row(coarse(coarse.LandingCheckPass,:));
+            if ~isempty(best), centers(end+1) = best.WS_lb_ft2; end %#ok<AGROW>
+            fineWS = [];
+            for center = unique(centers)
+                fineWS = [fineWS center-opt.AR_refine_half_width: ...
+                    opt.AR_refine_step:center+opt.AR_refine_half_width]; %#ok<AGROW>
+            end
+            fineWS = unique(fineWS);
+            fineWS = fineWS(fineWS>=min(opt.WS) & fineWS<=max(opt.WS));
+            fineWS = setdiff(fineWS,opt.WS);
+            for ws = fineWS
+                rows(end+1,1) = run_case('AR sensitivity',ws,ar,1,gradient,true); %#ok<AGROW>
+            end
+        end
+    end
+end
+study.AR = struct2table(rows);
+study.AR = sortrows(study.AR,{'AR','WS_lb_ft2'});
+study.AR_best = summarize_AR(study.AR);
+study.AR_diagnostics = summarize_feasibility(study.AR);
+
+rows = repmat(blank(),0,1);
+if opt.do_drag
+    for scale = opt.CD0_scales
+        for ws = opt.WS
+            rows(end+1,1) = run_case('CD0 sensitivity',ws,msn.AR,scale,gradient,true); %#ok<AGROW>
+        end
+    end
+end
+study.drag = struct2table(rows);
+
+rows = repmat(blank(),0,1);
+if opt.do_climb
+    for grad = opt.climb_gradients
+        rows(end+1,1) = run_case('Climb target sensitivity',chosenWS,msn.AR,1,grad,true); %#ok<AGROW>
+    end
+end
+study.climb = struct2table(rows);
+rows = repmat(blank(),0,1);
+if opt.do_battery
+    for whkg = opt.pack_Whkg_values
+        variant = msn; variant.whkg = whkg;
+        for ws = opt.WS
+            rows(end+1,1) = run_case('Pack energy density',ws,msn.AR,1,gradient,true,variant); %#ok<AGROW>
+        end
+    end
+end
+study.battery = struct2table(rows);
+rows = repmat(blank(),0,1);
+if opt.do_mission
+    for range_nm = opt.range_nm_values
+        for reserve_min = opt.reserve_min_values
+            variant = msn; variant.range = range_nm; variant.reserve = reserve_min;
+            for ws = opt.WS
+                rows(end+1,1) = run_case('Mission requirements',ws,msn.AR,1,gradient,true,variant); %#ok<AGROW>
+            end
+        end
+    end
+end
+study.mission = struct2table(rows);
+study.inputs = msn;
+study.source_inputs = source_inputs;
+study.options = opt;
+study.details = details;
+study.numbering = {'L1','L2','L3','L4','R1','R2','R3','R4'};
+study.battery_pairs = AEGAbatterypairs2035(msn);
+study.provenance = struct('source','MATLAB AEGAwingtrades', ...
+    'generated_at',char(datetime('now','Format','yyyy-MM-dd HH:mm:ss')), ...
+    'scope','Steady-state sizing screen; best points are sampled, not optimized.');
+figures = gobjects(0); plotNames = {};
+if opt.doplot
+    % Explicit palette: lines(7) can inherit the black ColorOrder set by
+    % AEGAconstraint instead of returning MATLAB's usual multicolor palette.
+    set(groot,'defaultAxesColorOrder', ...
+        [0.000 0.447 0.741; ... % blue
+         0.850 0.325 0.098; ... % orange
+         0.650 0.490 0.000; ... % dark gold
+         0.494 0.184 0.556; ... % purple
+         0.250 0.600 0.150; ... % green
+         0.301 0.745 0.933; ... % light blue
+         0.635 0.078 0.184]);   % dark red
+    [figures,plotNames] = draw_results(study);
+end
+if ~isempty(opt.output_dir)
+    AEGAtradeassumptions2035(study);
+    if ~isfolder(opt.output_dir), mkdir(opt.output_dir); end
+    fields = {'main','AR','drag','climb','battery','mission'};
+    filenames = {'01_wing_loading.csv','02_aspect_ratio.csv', ...
+        '03_parasite_drag.csv','04_climb_target.csv', ...
+        '05_battery_energy_density.csv','06_mission_requirements.csv'};
+    for j = 1:numel(fields)
+        if ~isempty(study.(fields{j}))
+            writetable(study.(fields{j}),fullfile(opt.output_dir,filenames{j}));
+        end
+    end
+    if ~isempty(study.AR_best)
+        writetable(study.AR_best,fullfile(opt.output_dir,'07_AR_design_summary.csv'));
+        writetable(study.AR_diagnostics,fullfile(opt.output_dir,'08_AR_feasibility_diagnostics.csv'));
+    end
+    save(fullfile(opt.output_dir,'wingtrade_results.mat'),'study');
+    if opt.save_plots
+        for j = 1:numel(figures)
+            exportgraphics(figures(j),fullfile(opt.output_dir,[plotNames{j} '.png']), ...
+                'Resolution',180);
+            savefig(figures(j),fullfile(opt.output_dir,[plotNames{j} '.fig']));
+        end
+    end
+    fprintf('\nResults saved to %s\n',opt.output_dir);
+else
+    fprintf('\nResults returned in the study struct; no files saved.\n');
+end
+fprintf('Failed/nonconverged cases remain in the tables; plot gaps are NOT zero power.\n');
+
+    function row = run_case(group,ws,ar,scale,grad,enforce,caseInputs)
+        if nargin < 7, caseInputs = msn; end
+        row = blank();
+        row.Group = group; row.WS_lb_ft2 = ws; row.AR = ar;
+        row.CD0_scale = scale; row.ClimbGradient = grad;
+        row.BatteryOutEnforced = enforce;
+        row.PackWh_kg = caseInputs.whkg;
+        row.Range_nm = caseInputs.range; row.Reserve_min = caseInputs.reserve;
+        row.LandingReverseTW = caseInputs.reverse_TW;
+        key = sprintf('%.17g,%.17g,%.17g,%.17g,%d,%.17g,%.17g,%.17g', ...
+            ws,ar,scale,grad,enforce,caseInputs.whkg,caseInputs.range,caseInputs.reserve);
+        if isKey(cache,key)
+            item = cache(key);
+        else
+            caseCount = caseCount+1;
+            fprintf(['Case %d: W/S %.1f, AR %.2f, CD0 x %.2f, climb %.1f%%, ' ...
+                'battery-out %d, %.0f Wh/kg, %.0f nm + %.0f min\n'], ...
+                caseCount,ws,ar,scale,100*grad,enforce, ...
+                caseInputs.whkg,caseInputs.range,caseInputs.reserve);
+            drawnow;
+            m = caseInputs; m.AR = ar;
+            eo = opt.eo; eo.selected_climb_gradient = grad;
+            sizing=baseSizing;
+            sizing.enforce_battery_out=enforce; sizing.CD0_scale=scale; sizing.eo=eo;
+            if opt.current_configuration
+                sizing.mission_profile=struct('name',"Current wing trade", ...
+                    'route_speed_ktas',m.Vkt,'route_distance_nm',m.range,'reserve_speed_ktas',m.Vkt);
+                core=m.prop_high_lift_y_side_ft(end)+sum(m.prop_D_side_ft(3:4))/2+cfg.prop_gap_ft;
+                sizing.initial_MTOW=max(3200,1.03*(2*core)^2*ws/m.AR);
+            end
+            try
+                result = AEGAsize(m,ws,sizing);
+                item = struct('result',result,'error','');
+            catch err
+                item = struct('result',[],'error',[err.identifier ': ' err.message]);
+            end
+            details{end+1} = item;
+            item.index = numel(details);
+            cache(key) = item;
+        end
+        row.DetailIndex = item.index;
+        if ~isempty(item.error)
+            row.Status = item.error;
+            return
+        end
+        r = item.result;
+        row.Converged = r.converged; row.PassesScreen = r.feasible;
+        row.Status = r.status; row.MTOW_lb = r.MTOW;
+        row.Wing_ft2 = r.SW; row.Span_ft = r.span;
+        row.Battery_lb = r.W.battery; row.WingWeight_lb = r.W.wing;
+        row.Pack_kWh = r.pack_kWh; row.UsableMission_kWh = r.Ebat;
+        row.Installed_kW = r.PTO_kW; row.CruiseBattery_kW = r.Pcruise_kW;
+        row.Installed_hp_lb = r.PTO_kW/(.745699872*r.MTOW);
+        row.Normal_hp_lb = r.Pnormal_kW/(.745699872*r.MTOW);
+        row.BatteryLift_hp_lb = max(r.eo.bounds_hp_lb(2:5,1));
+        row.BatteryApproach_hp_lb = max(r.eo.bounds_hp_lb(2:5,2));
+        row.BatteryTakeoffClimb_hp_lb = max(r.eo.bounds_hp_lb(2:5,3));
+        row.BatteryGoAround_hp_lb = max(r.eo.bounds_hp_lb(2:5,4));
+        row.CriticalBattery = r.eo.worst_battery;
+        row.MinRetainedPower = min(r.eo.retained_power_fraction(2:5));
+        row.CD0 = r.CD0; row.CDi = r.CDi; row.LD = r.LD;
+        row.Landing_ft = r.con.S_land_ft; row.LandingCheckPass = r.con.landing_ok;
+        row.LandingAir_ft = r.con.S_land_air_ft;
+        row.LandingGround_ft = r.con.S_land_ground_ft;
+        row.LandingNoReverse_ft = r.con.S_land_no_reverse_ft;
+        row.LandingReversePeakTW = r.con.landing_ground_roll.peak_reverse_TW;
+        row.WeightResidual_lb = r.weight_residual_lb;
+        row.Driver = r.power_driver;
+        row.MissionDriver = r.mission.driver;
+        row.PropDiameterMin_ft = min(r.prop_layout.D_side);
+        row.PropDiameterMax_ft = max(r.prop_layout.D_side);
+        row.DiskArea_ft2 = r.Adisc;
+        row.PropWeight_lb = r.W.propeller;
+        row.TailWeight_lb = r.W.htail+r.W.vtail;
+        row.NonBatteryWeight_lb = r.MTOW-r.W.battery;
+        row.MAC_ft = r.MAC;
+        row.VS1_kt = r.VS1;
+        row.MotorSpecificPower_kWkg = caseInputs.kWkg_m;
+        if ~isempty(r.operating_phases)
+            ph=r.operating_phases; needed=ph.RequiredForSizing;
+            row.PhaseSchedulePass=all(ph.LiftPass(needed) & ph.PowerPass(needed) & ph.ThrustBalancePass(needed));
+        end
+    end
+end
+
+function r = blank()
+r = struct('Group','','WS_lb_ft2',NaN,'AR',NaN,'CD0_scale',NaN, ...
+    'ClimbGradient',NaN,'BatteryOutEnforced',false,'Converged',false, ...
+    'PassesScreen',false,'Status','','MTOW_lb',NaN,'Wing_ft2',NaN,'Span_ft',NaN, ...
+    'Battery_lb',NaN,'WingWeight_lb',NaN,'Pack_kWh',NaN,'UsableMission_kWh',NaN, ...
+    'Installed_kW',NaN,'CruiseBattery_kW',NaN,'Installed_hp_lb',NaN, ...
+    'Normal_hp_lb',NaN,'BatteryLift_hp_lb',NaN,'BatteryApproach_hp_lb',NaN, ...
+    'BatteryTakeoffClimb_hp_lb',NaN,'BatteryGoAround_hp_lb',NaN, ...
+    'CriticalBattery',NaN,'MinRetainedPower',NaN,'CD0',NaN,'CDi',NaN,'LD',NaN, ...
+    'Landing_ft',NaN,'LandingCheckPass',false,'WeightResidual_lb',NaN, ...
+    'Driver','','DetailIndex',NaN,'PackWh_kg',NaN,'Range_nm',NaN, ...
+    'Reserve_min',NaN,'MissionDriver','', ...
+    'PropDiameterMin_ft',NaN,'PropDiameterMax_ft',NaN,'DiskArea_ft2',NaN, ...
+    'PropWeight_lb',NaN,'TailWeight_lb',NaN,'NonBatteryWeight_lb',NaN, ...
+    'MAC_ft',NaN,'VS1_kt',NaN,'MotorSpecificPower_kWkg',NaN, ...
+    'LandingReverseTW',NaN,'LandingAir_ft',NaN,'LandingGround_ft',NaN, ...
+    'LandingNoReverse_ft',NaN,'LandingReversePeakTW',NaN,'PhaseSchedulePass',false);
+end
+
+function best = best_row(t,objective)
+if nargin < 2, objective = 'MTOW_lb'; end
+t = t(t.PassesScreen & t.BatteryOutEnforced,:);
+if isempty(t), best = t; return; end
+t = t(isfinite(t.(objective)),:);
+if isempty(t), best = t; return; end
+[~,i] = min(t.(objective)); best = t(i,:);
+end
+
+function summary = summarize_AR(t)
+summary = t([],:); summary.Selection = cell(0,1);
+for ar = unique(t.AR).'
+    a = t(t.AR==ar,:);
+    objectives = {'MTOW_lb','MTOW_lb','Pack_kWh','Installed_kW'};
+    labels = {'Minimum MTOW','Minimum MTOW + landing check', ...
+        'Minimum battery capacity','Minimum installed power'};
+    for j = 1:numel(objectives)
+        candidates = a;
+        if j==2, candidates = candidates(candidates.LandingCheckPass,:); end
+        best = best_row(candidates,objectives{j});
+        if isempty(best)
+            best = struct2table(blank(),'AsArray',true); best.AR = ar;
+            best.Status = {'No passing sample for this selection'};
+        end
+        best.Selection = labels(j);
+        summary = [summary; best]; %#ok<AGROW>
+    end
+end
+end
+
+function summary=summarize_feasibility(t)
+rows=cell(numel(unique(t.AR)),1); n=0;
+for ar=unique(t.AR).'
+    a=t(t.AR==ar,:); passing=best_row(a);
+    calculated=a(a.Converged & isfinite(a.MTOW_lb),:);
+    if isempty(calculated), continue; end
+    [~,j]=min(calculated.MTOW_lb); minimum=calculated(j,:);
+    n=n+1; bestWS=NaN; bestMTOW=NaN;
+    if ~isempty(passing), bestWS=passing.WS_lb_ft2; bestMTOW=passing.MTOW_lb; end
+    rows{n}=struct('AR',ar,'MinimumPassingWS_lb_ft2',bestWS, ...
+        'MinimumPassingMTOW_lb',bestMTOW, ...
+        'MinimumCalculatedWS_lb_ft2',minimum.WS_lb_ft2, ...
+        'MinimumCalculatedMTOW_lb',minimum.MTOW_lb, ...
+        'CalculatedMinimumPassesScreen',minimum.PassesScreen, ...
+        'CalculatedMinimumLanding_ft',minimum.Landing_ft, ...
+        'CalculatedMinimumStatus',string(minimum.Status));
+end
+if n==0, summary=table(); else, summary=struct2table(vertcat(rows{1:n})); end
+end
+
+function [figures,names] = draw_results(s)
+figures = gobjects(0); names = {};
+t = s.main; colors = [0.15 .40 .70; .85 .35 .10];
+styles = {'--s','-o'}; markerSizes = [7 4];
+f = figure('Color','w','Name','Wing loading vs power - resized aircraft');
+tiledlayout(1,2);
+nexttile; hold on; grid on;
+for k = 1:2
+    a = t(t.BatteryOutEnforced == (k==2),:);
+    plot(a.WS_lb_ft2,valid(a,'Installed_kW'),styles{k},'Color',colors(k,:), ...
+        'DisplayName',a.Group{1},'LineWidth',1.7, ...
+        'MarkerSize',markerSizes(k),'MarkerFaceColor','w');
+end
+xlabel('Wing loading, lb/ft^2'); ylabel('Total installed SHAFT power, kW'); legend('Location','best');
+nexttile; hold on; grid on;
+a = t(t.BatteryOutEnforced,:);
+cols = {'Normal_hp_lb','BatteryLift_hp_lb','BatteryApproach_hp_lb', ...
+    'BatteryTakeoffClimb_hp_lb','BatteryGoAround_hp_lb','Installed_hp_lb'};
+labs = {'Normal requirements','Battery-out 60 kt lift','Battery-out approach', ...
+    'Battery-out takeoff climb','Battery-out go-around','Installed envelope'};
+for k = 1:numel(cols)
+    width = 1.3; if k==numel(cols), width = 2.5; end
+    plot(a.WS_lb_ft2,valid(a,cols{k}),'-','LineWidth',width,'DisplayName',labs{k});
+end
+xlabel('Wing loading, lb/ft^2'); ylabel('Total installed shaft P/W, hp/lb'); legend('Location','best');
+sgtitle(AEGAtradetitle2035('Wing Loading and Installed Propulsion Power',s.inputs, ...
+    sprintf('AR %.1f | taper %.2f | geometry and mass re-sized at each W/S',s.inputs.AR,s.inputs.TR)), ...
+    'Color','k','FontSize',12);
+wing_loading_axes(f,t);
+finish_plot(f);
+record(f,'01_power');
+
+f = figure('Color','w','Name','Wing loading vs aircraft size'); tiledlayout(2,3);
+cols = {'MTOW_lb','Wing_ft2','Span_ft','Pack_kWh','Battery_lb','CruiseBattery_kW'};
+labs = {'MTOW, lb','Wing area, ft^2','Span, ft','Installed battery, kWh', ...
+    'Battery weight, lb','Cruise BATTERY power, kW'};
+for j = 1:numel(cols)
+    nexttile; hold on; grid on;
+    for k = 1:2
+        a = t(t.BatteryOutEnforced == (k==2),:);
+        rejected_curve(a,cols{j},colors(k,:));
+        plot(a.WS_lb_ft2,valid(a,cols{j}),styles{k},'Color',colors(k,:), ...
+            'DisplayName',a.Group{1},'LineWidth',1.5, ...
+            'MarkerSize',markerSizes(k),'MarkerFaceColor','w');
+    end
+    xlabel('W/S, lb/ft^2'); ylabel(labs{j});
+    if j==1, legend('Location','best'); end
+end
+sgtitle(AEGAtradetitle2035('Wing Loading, Aircraft Mass and Energy Storage',s.inputs, ...
+    sprintf('x: rejected | reverse target %.0f%% W, below %.0f kt after %.0f s; hardware %.1f lb', ...
+    100*s.inputs.reverse_TW,s.inputs.reverse_engage_below_kt, ...
+    s.inputs.reverse_delay_s,s.inputs.reverse_hardware_lb)),'Color','k','FontSize',12);
+wing_loading_axes(f,t);
+finish_plot(f);
+record(f,'02_size_and_battery');
+if ~isempty(s.AR), record(draw_sensitivity(s.AR,'AR','Aspect Ratio Sensitivity',s.inputs),'03_AR'); end
+if ~isempty(s.drag), record(draw_sensitivity(s.drag,'CD0_scale','Parasite-Drag Sensitivity',s.inputs),'04_drag'); end
+if ~isempty(s.climb)
+    f = figure('Color','w','Name','One-battery-out climb target'); tiledlayout(1,2);
+    nexttile; plot(100*s.climb.ClimbGradient,valid(s.climb,'Installed_kW'),'-o','LineWidth',1.7); grid on;
+    xlabel('Required climb gradient, %'); ylabel('Installed shaft power, kW');
+    nexttile; plot(100*s.climb.ClimbGradient,valid(s.climb,'MTOW_lb'),'-o','LineWidth',1.7); grid on;
+    xlabel('Required climb gradient, %'); ylabel('MTOW, lb');
+    sgtitle(sprintf('Fixed W/S %.1f; re-sized for each climb target',s.climb.WS_lb_ft2(1)),'Color','k');
+    finish_plot(f);
+    record(f,'05_climb_target');
+end
+if ~isempty(s.battery)
+    record(draw_sensitivity(s.battery,'PackWh_kg','Battery Specific Energy Sensitivity',s.inputs),'06_battery_energy_density');
+end
+if ~isempty(s.mission), record(draw_mission(s.mission),'07_mission_requirements'); end
+if ~isempty(s.AR_best), record(draw_AR_designs(s),'08_AR_design_choices'); end
+
+    function record(f,name)
+        figures(end+1) = f;
+        names{end+1} = name;
+    end
+end
+
+function y = valid(t,name)
+y = t.(name); y(~t.PassesScreen | ~isfinite(y)) = NaN;
+end
+
+function f = draw_sensitivity(t,field,label,m)
+f = figure('Color','w','Name',label); tiledlayout(1,2);
+cols = {'MTOW_lb','Pack_kWh'}; labs = {'MTOW, lb','Installed battery, kWh'};
+for j = 1:2
+    nexttile; hold on; grid on;
+    palette=get(gca,'ColorOrder'); groupIndex=0;
+    for v = unique(t.(field)).'
+        groupIndex=groupIndex+1; color=palette(1+mod(groupIndex-1,size(palette,1)),:);
+        a = sortrows(t(t.(field)==v,:),'WS_lb_ft2');
+        rejected_curve(a,cols{j},color);
+        plot(a.WS_lb_ft2,valid(a,cols{j}),'-o','LineWidth',1.5,'Color',color, ...
+            'DisplayName',sprintf('%s %.3g',field,v));
+    end
+    xlabel('Wing loading, lb/ft^2'); ylabel(labs{j}); legend('Location','best');
+end
+sgtitle(AEGAtradetitle2035(label,m,'Solid: feasible designs | dashed / x: rejected calculated designs'), ...
+    'Color','k','FontSize',12);
+wing_loading_axes(f,t);
+finish_plot(f);
+end
+
+function wing_loading_axes(f,t)
+% Preserve sampled bounds even when a geometry failure leaves NaN results.
+ws=unique(t.WS_lb_ft2); if numel(ws)<2, return; end
+axesList=findall(f,'Type','Axes');
+for ax=axesList(:).'
+    xlim(ax,[min(ws) max(ws)]);
+    if numel(ws)<=12, xticks(ax,ws); end
+end
+missing=ws(arrayfun(@(x)~any(t.Converged(t.WS_lb_ft2==x)),ws));
+if ~isempty(missing) && ~isempty(axesList)
+    text(axesList(end),.98,.60, ...
+        sprintf('No solution at W/S %s',strjoin(compose('%g',missing),', ')), ...
+        'Units','normalized','HorizontalAlignment','right', ...
+        'FontSize',9,'Color',[.35 .35 .35],'BackgroundColor','w');
+end
+end
+
+function rejected_curve(t,field,color)
+% Keep finite, converged rejected results visible without implying feasibility.
+y=t.(field); y(~t.Converged | ~isfinite(y))=NaN;
+plot(t.WS_lb_ft2,y,'--','LineWidth',.9,'Color',color,'HandleVisibility','off');
+bad=t.Converged & ~t.PassesScreen & isfinite(y);
+plot(t.WS_lb_ft2(bad),y(bad),'x','MarkerSize',6,'Color',color,'HandleVisibility','off');
+end
+
+function f = draw_mission(t)
+f = figure('Color','w','Name','Mission range and reserve'); tiledlayout(1,2);
+ranges = unique(t.Range_nm);
+cols = {'MTOW_lb','Pack_kWh'}; labs = {'MTOW, lb','Installed battery, kWh'};
+for j = 1:2
+    nexttile; hold on; grid on;
+    for reserve = unique(t.Reserve_min).'
+        y = nan(size(ranges));
+        for k = 1:numel(ranges)
+            a = t(t.Range_nm==ranges(k) & t.Reserve_min==reserve,:);
+            best = best_row(a);
+            if ~isempty(best), y(k) = best.(cols{j}); end
+        end
+        plot(ranges,y,'-o','LineWidth',1.5, ...
+            'DisplayName',sprintf('%.0f min reserve',reserve));
+    end
+    xlabel('Required range, nm'); ylabel(labs{j}); legend('Location','best');
+end
+sgtitle('Best passing sampled W/S per mission; cross-country mission remains enforced','Color','k');
+finish_plot(f);
+end
+
+function f = draw_AR_designs(s)
+t = s.AR_best;
+weight = t(strcmp(t.Selection,'Minimum MTOW'),:);
+landing = t(strcmp(t.Selection,'Minimum MTOW + landing check'),:);
+f = figure('Color','w','Name','Aspect ratio design choices', ...
+    'Position',[100 100 1250 720]); tiledlayout(2,6,'TileSpacing','compact','Padding','compact');
+cols = {'MTOW_lb','Pack_kWh','Span_ft','Installed_kW','Landing_ft'};
+labs = {'MTOW, lb','Installed battery, kWh', ...
+    'Span, ft','Installed shaft power, kW','Landing distance, ft'};
+for j = 1:numel(cols)
+    if j<=3, nexttile([1 2]); else, nexttile([1 3]); end
+    hold on; grid on;
+    plot(weight.AR,valid(weight,cols{j}),'-o','LineWidth',1.6, ...
+        'Color',[.15 .40 .70],'DisplayName','Minimum MTOW');
+    if ~s.inputs.enforce_land
+        plot(landing.AR,valid(landing,cols{j}),'--s','LineWidth',1.2, ...
+            'Color',[.25 .60 .15],'MarkerSize',4, ...
+            'DisplayName','Minimum MTOW + landing check');
+    end
+    overTarget = weight.PassesScreen & ~weight.LandingCheckPass;
+    plot(weight.AR(overTarget),weight.(cols{j})(overTarget),'rx', ...
+        'MarkerSize',9,'LineWidth',1.6, ...
+        'DisplayName','Above target at assumed reverse thrust');
+    xlabel('Aspect ratio'); ylabel(labs{j});
+    if j==1
+        legend('Location','best');
+        xline(15,':','X-57 AR reference','HandleVisibility','off','Color',[.4 .4 .4]);
+    end
+    if strcmp(cols{j},'Landing_ft')
+        yline(s.inputs.S_field,'k:','Field-length target','HandleVisibility','off');
+    end
+end
+sgtitle(AEGAtradetitle2035('Aspect Ratio and Selected Aircraft Characteristics',s.inputs, ...
+    sprintf('Best feasible sampled W/S per AR | reverse target %.0f%% W, below %.0f kt after %.0f s', ...
+    100*s.inputs.reverse_TW,s.inputs.reverse_engage_below_kt,s.inputs.reverse_delay_s)), ...
+    'Color','k','FontSize',12);
+finish_plot(f);
+end
+
+function finish_plot(f)
+set(findall(f,'Type','axes'),'Color','w','XColor','k','YColor','k');
+set(findall(f,'Type','text'),'Color','k');
+set(findall(f,'Type','legend'),'Color','w','TextColor','k');
+% Honor the caller's visibility setting during batch export.
+drawnow;
+end

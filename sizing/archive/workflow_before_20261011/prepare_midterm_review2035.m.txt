@@ -1,0 +1,286 @@
+function package = prepare_midterm_review2035(opt)
+% Curate checked wing results and refresh a small, matched battery/range trade.
+% Run in MATLAB: prepare_midterm_review2035
+% For cosmetic changes only: prepare_midterm_review2035(struct('plots_only',true))
+% No changes to AEGAinputs or to the aircraft physics helpers.
+if nargin < 1, opt = struct(); end
+root = fileparts(mfilename('fullpath'));
+if ~isfield(opt,'output_dir'), opt.output_dir = fullfile(root,'midterm_review'); end
+if ~isfield(opt,'WS'), opt.WS = 28:2:36; end
+if ~isfield(opt,'pack_Whkg'), opt.pack_Whkg = [300 350 400 450]; end
+if ~isfield(opt,'range_nm'), opt.range_nm = [250 300]; end
+if ~isfield(opt,'plots_only'), opt.plots_only = false; end
+validateattributes(opt.WS,{'numeric'},{'vector','finite','positive'});
+validateattributes(opt.pack_Whkg,{'numeric'},{'vector','finite','positive'});
+validateattributes(opt.range_nm,{'numeric'},{'vector','finite','positive'});
+source = fullfile(root,'trade_results','optimized_wings_20261007_190112_237');
+loaded = load(fullfile(source,'optimized_wing_comparison.mat'),'saved');
+s = loaded.saved;
+assert(s.options.coupled_flight_phases,'The midterm requires the coupled model.');
+check_coupledflight2035(s);
+if ~isfolder(opt.output_dir), mkdir(opt.output_dir); end
+oldOrder = get(groot,'defaultAxesColorOrder');
+guard = onCleanup(@() set(groot,'defaultAxesColorOrder',oldOrder));
+
+% Use only the shared coarse grid: uneven local searches are not an AR sweep.
+t = s.evaluated_designs;
+c = t(t.Profile=="Current 120-knot mission" & t.Family=="Fixed" & t.Stage=="coarse",:);
+wing = c([],:); wing.Selection = strings(0,1);
+for ar = unique(c.AR_extended).'
+    a = c(c.AR_extended==ar,:);
+    wing = [wing; choices(a)]; %#ok<AGROW>
+end
+writetable(wing,fullfile(opt.output_dir,'01_wing_choices.csv'));
+writetable(c,fullfile(opt.output_dir,'01_wing_coarse_source.csv'));
+plot_wing(c,wing,opt.output_dir);
+if opt.plots_only
+    prior=load(fullfile(opt.output_dir,'midterm_review.mat'),'package');
+    package=prior.package;
+    assert(strcmp(package.source_dir,source),'Plot data belong to a different source study.');
+    plot_battery(package.battery_choices,opt.output_dir);
+    plot_telescoping(s,source,opt.output_dir);
+    fprintf('Refreshed main figures from checked saved numeric data.\n');
+    return
+end
+
+% Match the current study's prop diameters, physical high-lift hubs, 2035
+% technology, phase energy, cruise motors and battery-out constraints.
+j = find(s.best.Family=="Fixed" & s.best.Profile=="Current 120-knot mission",1);
+ref = s.best_details{j}; m0 = ref.msn; o = ref.options;
+m0.AR = 18; m0.TR = .20; m0.reserve = 45;
+o.retract_fraction = 0; o.retraction_policy = 'manual';
+o.cruise_deployment = 1; o.mechanism_build = []; o.joint_seal = [];
+o.mission_profile = []; o.initial_MTOW = 3200; o.weight_tolerance = .01;
+assert(isequal(o.cruise_disk_indices,[4 8]) && o.coupled_flight_phases);
+assert(o.enforce_battery_out && abs(o.wing_mass_factor-.8)<1e-8);
+assert(max(abs(m0.prop_D_side_ft-[2.8 2.8 2.8 4.5]))<1e-8);
+rows = repmat(blank(),0,1); details = {};
+for whkg = opt.pack_Whkg
+    for range = opt.range_nm
+        for ws = opt.WS
+            m = m0; m.whkg = whkg; m.range = range;
+            o.mission_profile = struct('name',"Midterm fixed-wing battery/range trade", ...
+                'route_speed_ktas',120,'route_distance_nm',range,'reserve_speed_ktas',120);
+            r = blank(); r.PackWh_kg = whkg; r.Range_nm = range;
+            r.Reserve_min = m.reserve; r.WS_lb_ft2 = ws;
+            fprintf('Midterm case %d: %.0f Wh/kg, %.0f nm, W/S %.1f\n',numel(rows)+1,whkg,range,ws);
+            try
+                out = AEGAtrade_size(m,ws,o);
+                r.MTOW_lb = out.MTOW; r.Battery_lb = out.W.battery;
+                r.Pack_kWh = out.pack_kWh; r.RequiredUsable_kWh = out.Ebat;
+                r.WingArea_ft2 = out.SW; r.Span_ft = out.span;
+                r.InstalledShaft_kW = out.PTO_kW; r.Landing_ft = out.con.S_land_ft;
+                r.LandingCheckPass = out.con.landing_ok;
+                r.PassesScreen = out.feasible; r.Converged = out.converged;
+                r.CleanStall_kt = out.VS1; r.WeightResidual_lb = out.weight_residual_lb;
+                r.MissionDriver = string(out.mission.driver); r.Status = string(out.status);
+                if out.converged
+                    assert(abs(out.weight_residual_lb)<o.weight_tolerance);
+                    assert(abs(out.SW*ws-out.MTOW)<1e-8);
+                    assert(abs(out.span^2/out.SW-18)<1e-8);
+                    assert(abs(sum(out.operating_phases.EnergyWithAllowance_kWh)-out.mission.E_range)<1e-8);
+                    assert(abs(out.Ebat-max(out.mission.E_range,out.mission.E_ppl_xc))<1e-8);
+                end
+                details{end+1} = struct('result',out,'error',''); %#ok<AGROW>
+            catch err
+                % Input/packing failures are retained in the raw table. Checks
+                % must never be converted into a supposedly feasible result.
+                if startsWith(err.identifier,'MATLAB:assertion'), rethrow(err); end
+                r.PassesScreen = false; r.Status = string(err.identifier)+": "+string(err.message);
+                details{end+1} = struct('result',[],'error',char(r.Status)); %#ok<AGROW>
+            end
+            r.DetailIndex = numel(details); rows(end+1,1) = r; %#ok<AGROW>
+        end
+    end
+end
+battery = struct2table(rows); best = battery([],:); best.Selection = strings(0,1);
+for whkg = opt.pack_Whkg
+    for range = opt.range_nm
+        a = battery(battery.PackWh_kg==whkg & battery.Range_nm==range,:);
+        best = [best; choices(a)]; %#ok<AGROW>
+        assert(any(a.PassesScreen & a.LandingCheckPass), ...
+            'No landing-passing case for %.0f Wh/kg / %.0f nm; inspect the raw table.',whkg,range);
+    end
+end
+writetable(battery,fullfile(opt.output_dir,'02_battery_range_all_cases.csv'));
+writetable(best,fullfile(opt.output_dir,'02_battery_range_choices.csv'));
+plot_battery(best,opt.output_dir);
+
+% Check the selected fresh cases using the existing physical-balance checks.
+picked = best(best.Selection=="Also landing check",:);
+verify = struct('best',table(true(height(picked),1),true(height(picked),1), ...
+    repmat("Fixed",height(picked),1),'VariableNames',{'PassesScreen','PhaseSchedulePass','Family'}), ...
+    'best_details',{cell(height(picked),1)});
+for k = 1:height(picked)
+    verify.best_details{k} = details{picked.DetailIndex(k)}.result;
+end
+check_coupledflight2035(verify);
+% Increasing pack specific energy should reduce the resized aircraft weight
+% for a common mission in this model; this tests a physical trend, not syntax.
+for range = opt.range_nm
+    a = sortrows(picked(picked.Range_nm==range,:),'PackWh_kg');
+    assert(all(diff(a.MTOW_lb)<0),'Unexpected pack-energy-density trend.');
+end
+csv = readtable(fullfile(opt.output_dir,'02_battery_range_all_cases.csv'));
+assert(height(csv)==height(battery) && max(abs(csv.MTOW_lb-battery.MTOW_lb),[],'omitnan')<1e-7);
+
+% Retain the source plots/data so assumptions do not silently change.
+plot_telescoping(s,source,opt.output_dir);
+copies = {'06_selected_span_and_power.png','04_cruise_span_and_power.png'; ...
+    '09_throttle_and_blown_lift.png','05_throttle_and_blown_lift.png'; ...
+    '02_best_designs.csv','03_fixed_vs_telescoping_best.csv'; ...
+    '07_best_sampled_with_landing_check.csv','03_fixed_vs_telescoping_landing_candidates.csv'; ...
+    '08_all_flight_phases.csv','05_all_flight_phases.csv'};
+for k = 1:size(copies,1)
+    copyfile(fullfile(source,copies{k,1}),fullfile(opt.output_dir,copies{k,2}));
+end
+phaseTable=readtable(fullfile(source,'08_all_flight_phases.csv'),'TextType','string');
+show=phaseTable.Profile=="Current 120-knot mission" & phaseTable.Family=="Fixed" & ...
+    ismember(phaseTable.Phase,["Takeoff","Initial climb","Clean climb","Route leg 1","Approach","Go-around"]);
+phaseSummary=phaseTable(show,{'Profile','Family','Phase','Speed_ktas', ...
+    'HighLiftThrottle_percent','CruiseThrottle_percent','CLmaxUnblown', ...
+    'CLmaxCredited','DeltaCL','LiftPass','PowerPass','ThrustBalancePass'});
+writetable(phaseSummary,fullfile(opt.output_dir,'06_current_mission_phase_summary.csv'));
+package = struct('created_at',char(datetime('now')), ...
+    'matlab_version',version,'source_dir',source,'options',opt,'inputs',m0, ...
+    'size_options',o,'wing_choices',wing,'battery_cases',battery, ...
+    'battery_choices',best,'battery_details',{details});
+save(fullfile(opt.output_dir,'midterm_review.mat'),'package','-v7.3');
+fid = fopen(fullfile(opt.output_dir,'RUN_NOTES.txt'),'w'); assert(fid>=0);
+fileGuard = onCleanup(@() fclose(fid));
+fprintf(fid,'Executed %s; MATLAB %s\n',package.created_at,version);
+fprintf(fid,'Wing chart: same-coverage coarse FIXED-wing grid from %s.\n',source);
+fprintf(fid,'Each AR selection minimizes sampled MTOW over W/S and taper; not a proven optimum.\n');
+fprintf(fid,'Fresh battery/range chart: AR18, taper .20, W/S grid %s; %.0f min reserve at 120 KTAS.\n',mat2str(opt.WS),m0.reserve);
+fprintf(fid,'Two 4.5-ft cruise props; six 2.8-ft HLP stowed in cruise; common physical HLP hubs.\n');
+fprintf(fid,'2035 technology: %.0f/%.0f kW/kg motor/inverter, %.0f%% usable pack, wing mass factor %.2f.\n',m0.kWkg_m,m0.kWkg_pe,100*m0.fusable,o.wing_mass_factor);
+fprintf(fid,'Actual-throttle phase lift, explicit phase energy, mirrored battery-bank screens included.\n');
+fprintf(fid,'Both enabled-only and landing-passing selections exported; battery chart uses landing-passing selections.\n');
+fprintf(fid,'Landing assumes reverse_TW %.2f; clean-stall enforcement %d, landing enforcement %d.\n',m0.reverse_TW,m0.enforce_VS1,m0.enforce_land);
+fprintf(fid,'Pack, mechanism and structure estimates are conceptual assumptions. No wingtip swirl drag credit.\n');
+fprintf(fid,'Source coupled checks and selected fresh-case geometry, energy, phase, closure and CSV checks passed.\n');
+fprintf('PASS: presentation curation and %d fresh matched battery/range cases. Saved to %s\n',height(battery),opt.output_dir);
+disp(picked(:,{'PackWh_kg','Range_nm','WS_lb_ft2','MTOW_lb','Pack_kWh','Landing_ft'}));
+end
+
+function r = blank()
+r = struct('PackWh_kg',NaN,'Range_nm',NaN,'Reserve_min',NaN,'WS_lb_ft2',NaN, ...
+    'MTOW_lb',NaN,'Battery_lb',NaN,'Pack_kWh',NaN,'RequiredUsable_kWh',NaN, ...
+    'WingArea_ft2',NaN,'Span_ft',NaN,'InstalledShaft_kW',NaN,'Landing_ft',NaN, ...
+    'LandingCheckPass',false,'PassesScreen',false,'Converged',false, ...
+    'CleanStall_kt',NaN,'WeightResidual_lb',NaN,'MissionDriver',"",'Status',"",'DetailIndex',NaN);
+end
+
+function picked = choices(t)
+picked = t([],:); picked.Selection = strings(0,1);
+for requireLanding = [false true]
+    a = t(t.PassesScreen & isfinite(t.MTOW_lb),:);
+    if requireLanding, a = a(a.LandingCheckPass,:); end
+    if isempty(a), continue; end
+    [~,j] = min(a.MTOW_lb); a = a(j,:);
+    if requireLanding, a.Selection = "Also landing check";
+    else, a.Selection = "Enabled screens only"; end
+    picked = [picked;a]; %#ok<AGROW>
+end
+end
+
+function plot_wing(c,wing,folder)
+f = figure('Visible','off','Color','w','Position',[100 100 1200 550]);
+guard = onCleanup(@() close(f));
+tiledlayout(1,2,'TileSpacing','compact','Padding','compact');
+nexttile; hold on; grid on;
+for selection = ["Enabled screens only" "Also landing check"]
+    a = sortrows(wing(wing.Selection==selection,:),'AR_extended');
+    if selection=="Enabled screens only", style='-o'; color=[0 .35 .65];
+    else, style='--s'; color=[.8 .3 .05]; end
+    plot(a.AR_extended,a.MTOW_lb,style,'Color',color,'LineWidth',2,'DisplayName',selection);
+end
+xlabel('Aspect ratio'); ylabel('Best sampled MTOW, lb');
+title('Trade higher AR against mass and field length'); legend('Location','northeast');
+nexttile; hold on; grid on;
+colors = lines(3); ars = [14 16 18];
+for k = 1:numel(ars)
+    a = sortrows(c(c.AR_extended==ars(k) & abs(c.Taper-.20)<1e-8 & c.Converged,:),'WS_lb_ft2');
+    y=a.MTOW_lb; y(~a.PassesScreen | ~a.LandingCheckPass)=NaN;
+    plot(a.WS_lb_ft2,y,'-o','Color',colors(k,:),'LineWidth',2,'DisplayName',sprintf('AR %d',ars(k)));
+    bad = a(~a.PassesScreen | ~a.LandingCheckPass,:);
+    plot(bad.WS_lb_ft2,bad.MTOW_lb,'x','Color',colors(k,:),'LineWidth',2,'MarkerSize',10,'HandleVisibility','off');
+end
+plot(NaN,NaN,'kx','LineWidth',2,'MarkerSize',10,'DisplayName','Fails phase or landing screen');
+xlabel('Wing loading, lb/ft^2'); ylabel('MTOW, lb');
+title('Wing loading changes the design decision'); legend('Location','northeast');
+sgtitle({'120 KTAS | 250 nm + 45 min | two cruise props | 400 Wh/kg pack', ...
+    'Checked coarse grid; conceptual 2035 structure; landing assumes 8% W reverse thrust'},'FontSize',13,'Color','k');
+light_style(f);
+exportgraphics(f,fullfile(folder,'01_wing_loading_and_AR.png'),'Resolution',180);
+savefig(f,fullfile(folder,'01_wing_loading_and_AR.fig'));
+end
+
+function plot_battery(best,folder)
+t = best(best.Selection=="Also landing check",:);
+f = figure('Visible','off','Color','w','Position',[100 100 1200 550]);
+guard = onCleanup(@() close(f));
+tiledlayout(1,2,'TileSpacing','compact','Padding','compact');
+cols = {'MTOW_lb','Pack_kWh'}; labels = {'MTOW, lb','Installed pack capacity, kWh'};
+for panel = 1:2
+    nexttile; hold on; grid on;
+    colors=[0 .35 .65;.8 .3 .05]; k=0;
+    for range = unique(t.Range_nm).'
+        k=k+1;
+        a = sortrows(t(t.Range_nm==range,:),'PackWh_kg');
+        plot(a.PackWh_kg,a.(cols{panel}),'-o','Color',colors(k,:),'LineWidth',2,'DisplayName',sprintf('%g nm',range));
+    end
+    xline(400,'k:','2035 target','HandleVisibility','off');
+    xlabel('Pack specific energy, Wh/kg'); ylabel(labels{panel}); legend('Location','northeast');
+end
+sgtitle({'Battery technology and the assigned 300-nm mission drive aircraft sizing', ...
+    '120 KTAS + 45 min reserve | AR18, taper .20 | best landing-passing W/S on 28:2:36 grid'},'FontSize',13,'Color','k');
+light_style(f);
+exportgraphics(f,fullfile(folder,'02_battery_and_range.png'),'Resolution',180);
+savefig(f,fullfile(folder,'02_battery_and_range.fig'));
+end
+
+function plot_telescoping(s,source,folder)
+primary=s.best(s.best.Profile=="Current 120-knot mission",:);
+passing=readtable(fullfile(source,'07_best_sampled_with_landing_check.csv'),'TextType','string');
+passing=passing(passing.Profile=="Current 120-knot mission",:);
+y=zeros(2,2);
+for k=1:2
+    if k==1, family="Fixed"; else, family="Adaptive"; end
+    y(1,k)=primary.MTOW_lb(primary.Family==family);
+    y(2,k)=passing.MTOW_lb(passing.Family==family);
+end
+f=figure('Visible','off','Color','w','Position',[100 100 1200 550]);
+guard=onCleanup(@() close(f));
+tiledlayout(1,2,'TileSpacing','compact','Padding','compact');
+nexttile; hold on; grid on;
+b=bar(y); b(1).FaceColor=[0 .35 .65]; b(2).FaceColor=[.8 .3 .05];
+for k=1:2
+    text(b(k).XEndPoints,b(k).YEndPoints+40,compose('%.1f lb',y(:,k)), ...
+        'HorizontalAlignment','center','FontSize',10,'Color','k');
+end
+xticks(1:2); xticklabels({'Enabled screens only','Landing-passing candidates'});
+ylim([0 2700]); ylabel('MTOW, lb'); legend('Fixed','Adaptive','Location','northwest');
+title(sprintf('Adaptive penalty: +%.1f / +%.1f lb',diff(y(1,:)),diff(y(2,:))));
+nexttile; hold on; grid on;
+a=primary(primary.Family=="Adaptive",:);
+span=[a.SpanRetracted_ft a.SpanExtended_ft];
+b=bar(span,'FaceColor','flat'); b.CData=[.65 .65 .65;.8 .3 .05];
+text(1:2,span+1,compose('%.1f ft',span),'HorizontalAlignment','center','Color','k');
+xticks(1:2); xticklabels({'Fully retracted','Chosen cruise (full span)'});
+ylim([0 42]); ylabel('Adaptive-wing span, ft');
+title('20% stroke available; full span minimizes cruise drag');
+sgtitle({'Fixed versus telescoping: same 250-nm / 120-knot mission + 45 min reserve', ...
+    'Primary designs miss landing target by 19-22 ft; passing candidates are best examined, not re-optimized'},'FontSize',13,'Color','k');
+light_style(f);
+exportgraphics(f,fullfile(folder,'03_fixed_vs_telescoping.png'),'Resolution',180);
+savefig(f,fullfile(folder,'03_fixed_vs_telescoping.fig'));
+end
+
+function light_style(f)
+% R2026a may inherit a dark theme even on a white export figure.
+set(findall(f,'Type','axes'),'Color','w','XColor','k','YColor','k', ...
+    'GridColor',[.75 .75 .75],'FontSize',11);
+set(findall(f,'Type','text'),'Color','k');
+set(findall(f,'Type','legend'),'Color','w','TextColor','k','EdgeColor',[.4 .4 .4]);
+end

@@ -1,0 +1,109 @@
+function check_telescopingtrades2035()
+% Physical mass terms, independent drag, adaptive cruise and closed missions.
+m = AEGAlegacyinputs2035(); % historical numerical fixture
+baseline = AEGAtrade_size(m,32,struct());
+assert(baseline.feasible && abs(baseline.MTOW-2349.7110165744)<.01);
+assert(abs(baseline.pack_kWh-158.7456121345)<.001);
+o = struct('retract_fractions',[0 .1 .2],'doplot',false, ...
+    'size_options',struct('weight_tolerance',.005), ...
+    'output_dir',fullfile(fileparts(mfilename('fullpath')),'trade_results','telescoping_validation','checks'));
+s = AEGAtelescopingtrades(m,o);
+a = s.fixed_range; b = s.fixed_MTOW;
+assert(height(a)==21 && height(b)==21 && all(a.PassesScreen));
+assert(s.options.AR_max==18 && strcmp(s.options.cruise_deployment,'optimal'));
+assert(s.inputs.whkg==400 && s.options.technology.wing_mass_factor==.8);
+assert(all(abs(a.Wing_lb-.8*a.WingBeforeTechnology_lb)<1e-8));
+assert(all(abs(a.SpanMax_ft.^2./a.WingMax_ft2-18)<1e-8));
+assert(all(abs(a.SpanMin_ft./a.SpanMax_ft-(1-a.RetractFraction))<1e-10));
+assert(all(abs(a.StrokeEach_ft-a.RetractFraction.*a.SpanMax_ft/2)<1e-10));
+assert(all(abs(a.CruiseHubY_ft-a.SpanMin_ft/2)<1e-10));
+assert(all(abs(a.CruiseDiskArea_ft2-2*pi*(4.5/2)^2)<1e-9));
+assert(max(abs(a.WeightResidual_lb))<.005);
+assert(max(b.SpanMax_ft)-min(b.SpanMax_ft)<1e-10);
+assert(max(b.WingMax_ft2)-min(b.WingMax_ft2)<1e-10);
+assert(all(abs(b.AvailableBattery_lb+b.NonBattery_lb+m.payload-b.MTOW_lb)<1e-8));
+assert(all(b.PassesScreen));
+components = {'Actuators_lb','Guides_lb','LocksBearings_lb','ControlsWiring_lb', ...
+    'Seals_lb','OverlapCaps_lb','OverlapWebs_lb','OverlapSkin_lb', ...
+    'LocalFittings_lb','TorsionBucklingReserve_lb'};
+assert(max(abs(sum(b{:,components},2)-b.Mechanism_lb))<1e-8);
+assert(all(b.Mechanism_lb(b.RetractFraction>0)>0));
+assert(all(b.Mechanism_lb(b.RetractFraction==0)==0));
+for r = s.options.retract_fractions
+    ar = a(a.RetractFraction==r,:); br = b(b.RetractFraction==r,:);
+    assert(all(diff(ar.MTOW_lb)>=-1e-6));
+    assert(all(diff(br.Range_nm)<=1e-6));
+    assert(max(br.JointCruiseDragArea_ft2)-min(br.JointCruiseDragArea_ft2)<1e-10);
+end
+for j = 1:height(b)
+    out = s.fixed_MTOW_details{b.DetailIndex(j)};
+    assert(abs(out.mission.E_range-b.AvailableUsable_kWh(j))<1e-7);
+    assert(abs(out.weight_residual_lb)<.005);
+    assert(out.msn.AR==18 && abs(out.msn.SPAN-out.span)<1e-10);
+    % Component totals / normal margin cannot count tips or savings twice.
+    assert(abs(out.W.empty-(out.W.structure+out.W.propulsion+out.W.systems+out.W.margin+out.W.battery))<1e-8);
+end
+% Independent mass-only allowance uses actual lb and includes aircraft margin.
+z = s.mass_allowance_sensitivity;
+for r = unique(z.RetractFraction).'
+    az = z(z.RetractFraction==r,:);
+    assert(all(diff(az.Range_nm)<0));
+    assert(max(abs(diff(az.AvailableBattery_lb)+(1+m.fmarg)*diff(az.ExtraHardware_lb)))<1e-8);
+end
+% Seal quality varies drag while holding the bill of materials fixed.
+d = s.drag_sensitivity;
+for r = s.options.retract_fractions
+    dr = d(d.RetractFraction==r,:);
+    assert(max(dr.MechanismAtFixedMTOW_lb)-min(dr.MechanismAtFixedMTOW_lb)<1e-8);
+    assert(all(diff(dr.JointDragArea_ft2)>=-1e-10));
+    assert(all(diff(dr.MTOW_at_fixed_range_lb)>=-1e-6));
+end
+% Same airframe, hub and installed motors throughout the speed sweep.
+c = s.adaptive_cruise;
+assert(all(c.BatteryPower_kW<=c.FullExtensionPower_kW+1e-6));
+valid_ret = c.CleanCL<=s.inputs.CLmax_clean & c.Speed_ktas>=100;
+assert(all(c.BatteryPower_kW(valid_ret)<=c.FullRetractionPower_kW(valid_ret)+1e-6));
+assert(any(c.RetractFraction>.1 & c.Deployment>0 & c.Deployment<1));
+assert(all(~c.WithinBasicCruiseScreen(~c.CruiseMotorPowerPass | ~c.WithinModelSpeedCeiling)));
+for r = s.options.retract_fractions
+    cr = c(c.RetractFraction==r,:);
+    assert(max(cr.MTOW_lb)-min(cr.MTOW_lb)<1e-10);
+    assert(max(cr.CruiseHubY_ft)-min(cr.CruiseHubY_ft)<1e-10);
+    assert(max(cr.InstalledPower_kW)-min(cr.InstalledPower_kW)<1e-10);
+end
+idx = find(b.RetractFraction==.2 & b.BuildIndex==s.options.nominal_build_index,1);
+out = s.fixed_MTOW_details{b.DetailIndex(idx)};
+fast = out.msn; fast.Vkt = 185;
+opts = out.options; opts.cruise_deployment = 'optimal';
+best = AEGAtelescopingcruise(fast,out.MTOW,out.SW,out.span,out.base_drag_area_ft2,opts);
+assert(best.deployment>0 && best.deployment<1);
+for f = [0 .25 .5 .75 1]
+    opts.cruise_deployment = f;
+    forced = AEGAtelescopingcruise(fast,out.MTOW,out.SW,out.span,out.base_drag_area_ft2,opts);
+    assert(best.drag<=forced.drag+1e-7);
+end
+% ULF must directly scale the lap-joint load terms, not the actuator target.
+p = s.options.mechanism_builds(3);
+h1 = AEGAtelescopingmechanism(out.msn,out.MTOW,out.SW,out.span,.2,p);
+m2 = out.msn; m2.ULF = 2*m2.ULF;
+h2 = AEGAtelescopingmechanism(m2,out.MTOW,out.SW,out.span,.2,p);
+assert(abs(h2.OverlapCaps_lb-2*h1.OverlapCaps_lb)<1e-10);
+assert(abs(h2.OverlapWebs_lb-2*h1.OverlapWebs_lb)<1e-10);
+assert(h2.Actuators_lb==h1.Actuators_lb);
+% An intentionally demanding repeated-departure mission retains finite
+% project-trip capacity and flags the separate mission-floor failure.
+stress = m; stress.ppl_xc_takeoff_min = 12;
+small = o; small.output_dir = ''; small.do_drag_sensitivity = false;
+small.MTOW_fixed_lb = s.options.MTOW_fixed_lb;
+small.mechanism_builds = s.options.mechanism_builds(3); small.nominal_build_index = 1;
+stressed = AEGAtelescopingtrades(stress,small);
+assert(any(~stressed.fixed_MTOW.PPLMissionPass & isfinite(stressed.fixed_MTOW.Range_nm)));
+stress.enforce_ppl_xc = false;
+relaxed = AEGAtelescopingtrades(stress,small);
+assert(all(relaxed.fixed_MTOW.PassesScreen));
+csv = readtable(fullfile(s.options.output_dir,'02_range_at_fixed_MTOW.csv'));
+assert(max(abs(csv.Range_nm-b.Range_nm))<1e-8);
+saved = load(fullfile(s.options.output_dir,'telescoping_trade_results.mat'),'study');
+assert(isequaln(saved.study.fixed_range,a));
+fprintf('PASS: baseline unchanged; AR18; component mass/loads; 2035 wing/pack; adaptive optimum; fixed hardware; independent seal/weight studies; mass/energy closure; screens and exports.\n');
+end

@@ -1,0 +1,105 @@
+from pathlib import Path
+import hashlib
+import json
+import shutil
+
+root = Path.cwd().resolve()
+assert root == Path(r'C:\Users\ianjf\repos\Senior-Design\sizing').resolve()
+archive = root / 'archive' / 'workflow_before_20261011'
+private = root / 'private'
+assert not archive.exists(), 'Do not overwrite the pre-refactor snapshot.'
+archive.mkdir()
+private.mkdir(exist_ok=True)
+sources = list(root.glob('*.m'))
+manifest = {}
+for p in sources + [root / 'README.md']:
+    target = archive / (p.name + '.txt')
+    assert target.resolve().is_relative_to(root)
+    shutil.copy2(p, target)
+    manifest[p.name] = hashlib.sha256(p.read_bytes()).hexdigest()
+(archive / 'SHA256.json').write_text(json.dumps(manifest, indent=2))
+shutil.move(str(root / 'workflow_validation_before.mat'), archive)
+
+# Promote the existing coupled solver; keep its explicit three-argument API.
+solver = (root / 'AEGAtrade_size.m').read_text()
+prefix = '''function out = AEGAsize(msn,WS,opt)
+%AEGASIZE Shared aircraft sizing used by the baseline and all trade studies.
+%   out = AEGAsize()        current AEGAinputs, two cruise + six high-lift props
+%   out = AEGAsize(msn)     same architecture with the supplied inputs
+%   out = AEGAsize(msn,WS)  same architecture at a prescribed wing loading
+%   out = AEGAsize(msn,WS,opt) explicit resolved layout/options for study cases
+% Call AEGAconstraint(out) separately to plot the sized aircraft constraints.
+% Sizing and study samples create no figures. Weight, phase throttle, blown
+% lift, failure power, cruise deployment and landing reverse share one solver.
+if nargin < 1 || isempty(msn), msn = AEGAinputs(); end
+if nargin < 2 || isempty(WS), WS = msn.WS_design; end
+if nargin < 3
+    [msn,opt] = AEGAstudycase2035(msn);
+end
+'''
+solver = prefix + solver[solver.index("d = struct('enforce_battery_out'"):]
+solver = solver.replace('AEGAtrade_size:', 'AEGAsize:')
+solver = solver.replace('out.options = opt;\nend', '''out.options = opt;
+if nargout == 0
+    fprintf('Current aircraft: %.1f lb MTOW; W/S %.2f; AR %.2f; span %.2f ft.\\n', ...
+        out.MTOW,out.WSR,out.msn.AR,out.span);
+    fprintf('Landing %.0f / %.0f ft; passes enabled screens: %d (%s).\\n', ...
+        out.con.S_land_ft,out.msn.S_field,out.feasible,out.status);
+end
+end''', 1)
+(root / 'AEGAsize.m').write_text(solver)
+
+retired = {'AEGAtrade_size.m', 'Hub.m', 'blow_wind.m', 'AEGAplot_climb.m',
+           'AEGAtelescopingtrades.m', 'check_telescopingtrades2035.m',
+           'prepare_midterm_review2035.m', 'refresh_coupledflight_exports.m'}
+retired.update(p.name for p in sources if p.name.startswith('run_'))
+for p in sources:
+    assert p.resolve().is_relative_to(root)
+    if p.name in retired:
+        p.unlink()  # byte-for-byte .m.txt copy and checksum are already archived
+    elif p.name not in {'AEGAsize.m','AEGAinputs.m','AEGAconstraint.m'}:
+        destination = private / p.name
+        assert destination.resolve().is_relative_to(root) and not destination.exists()
+        shutil.move(str(p), str(destination))
+
+# Keep the still useful assumption review behind the unified trade entry.
+review = (archive / 'run_inputreview2035.m.txt').read_text()
+review = review.replace('run_inputreview2035', 'AEGAinputreview2035')
+review = review.replace('function review = AEGAinputreview2035()', 'function review = AEGAinputreview2035(m)')
+review = review.replace('m=AEGAinputs(); cfg=', 'if nargin<1, m=AEGAinputs(); end\ncfg=')
+(private / 'AEGAinputreview2035.m').write_text(review)
+
+for p in private.glob('*.m'):
+    text = p.read_text().replace('AEGAtrade_size', 'AEGAsize')
+    text = text.replace("fileparts(mfilename('fullpath'))", 'AEGAroot()')
+    p.write_text(text)
+(private / 'AEGAroot.m').write_text('''function root = AEGAroot()
+% Resolve data and output folders relative to the public entry points.
+root = fileparts(fileparts(mfilename('fullpath')));
+end
+''')
+
+# Reference inputs must survive study setup; the adaptive ceiling stays 18.
+p = private / 'AEGAstudysettings2035.m'
+s = p.read_text().replace('c.AR_max=18; c.reference_AR=18;', 'c.AR_max=18; c.reference_AR=msn.AR;')
+p.write_text(s)
+
+(archive / 'README.md').write_text('''# Workflow snapshot before consolidation, 2026-10-11
+
+Original MATLAB files and the previous README are preserved byte for byte as
+`.m.txt` / `.md.txt`, with SHA-256 hashes in SHA256.json. They cannot shadow the
+active functions, even with a recursive MATLAB path. The MAT file captures
+pre-refactor AR18, live AR15.5 and legacy regression sizing results.
+
+Current commands are `AEGAsize`, `AEGAconstraint`, and `AEGAtrades` in the
+sizing root. Active reusable models are in `private/`; do not add that folder
+or this archive to the MATLAB path. Superseded runners, Hub, the older sizing
+implementation, duplicate blown-lift helper, old telescoping sweep and old
+export refresh scripts are preserved here. The current optimized adaptive
+wing comparison, reverse-thrust and input sensitivity models remain active.
+
+Restore by copying a snapshot to a separate working folder and removing the
+final `.txt` extension; restore its dependencies together. Do not mix the old
+runners into the current root. Existing result packages were not moved.
+''')
+print(f'Archived {len(sources)} MATLAB sources; {len(list(private.glob("*.m")))} active private helpers.')

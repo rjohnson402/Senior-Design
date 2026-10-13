@@ -1,0 +1,19 @@
+function d = AEGAparasiticdrag(msn,S,SHT,SVT)
+% Geometry-sensitive clean drag area. Polar calibration is applied ONCE.
+% The reference scale is fixed in AEGAinputs; changing candidate geometry
+% changes its drag rather than recalibrating each candidate back to one CD0.
+scale=1;
+if isfield(msn,'drag_buildup_scale'), scale=msn.drag_buildup_scale; end
+validateattributes(scale,{'numeric'},{'scalar','finite','positive'});
+DAV=(msn.WFus+msn.DFus)/2;
+d.fuselage_wetted_ft2=pi*(msn.XL/DAV-1.7)*DAV^2;
+Re=msn.Vkt*1.688*msn.XL/msn.nu_cr; fineness=msn.XL/DAV;
+Cf=.455/log10(Re)^2.58;
+d.fuselage_ft2=scale*Cf*(1+60/fineness^3+fineness/400)*d.fuselage_wetted_ft2*msn.excr;
+d.wing_per_planform=scale*msn.Cf_w*msn.FF_w*msn.WETR*msn.excr;
+d.wing_ft2=d.wing_per_planform*(S-msn.SCOV);
+d.tail_ft2=scale*msn.Cf_t*msn.FF_t*msn.WETR*(SHT+SVT)*msn.excr;
+d.misc_ft2=scale*msn.Cf_m*msn.FF_m*msn.SMISC*msn.excr;
+d.total_ft2=d.fuselage_ft2+d.wing_ft2+d.tail_ft2+d.misc_ft2;
+d.CD0=d.total_ft2/S;
+end

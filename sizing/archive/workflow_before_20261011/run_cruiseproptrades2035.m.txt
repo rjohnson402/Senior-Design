@@ -1,0 +1,20 @@
+% Cruise diameter versus constraint-sized high-lift propellers.
+% Run in MATLAB from the sizing folder: run_cruiseproptrades2035
+msn = AEGAinputs();
+cfg = AEGAstudysettings2035(msn);
+opt = struct();
+opt.cruise_diameter_ft = cfg.cruise_diameters_ft;  % 2-6 ft; finer near the minimum
+opt.high_lift_diameter_ft = cfg.high_lift_diameters_ft; % six equal props, 1-3.2 ft
+opt.WS = cfg.prop_WS;               % 16-36 plus current W/S; refine diameters
+opt.AR = cfg.reference_AR; opt.taper = cfg.reference_taper;
+opt.anchor_high_lift_diameter_ft = cfg.anchor_high_lift_diameter_ft;
+opt.enforce_landing = cfg.enforce_landing; % field target, current reverse assumption
+opt.include_all_operating = true;   % illustrates the cost of retaining failure screens
+opt.refine = true; opt.refine_step_ft = .05;
+opt.max_installed_shaft_kW = Inf;    % set a team power budget here if one is established
+opt.plot_constraints = false;      % true: constraint diagrams for selected designs only
+opt.doplot = true; opt.save_plots = true;
+opt.output_dir = fullfile(fileparts(mfilename('fullpath')),'trade_results', ...
+    ['cruise_props_' char(datetime('now','Format','yyyyMMdd_HHmmss_SSS'))]);
+cruiseProps2035 = AEGAcruiseproptrades2035(msn,opt);
+fprintf('Saved cruise-prop trade to:\n%s\n',opt.output_dir);

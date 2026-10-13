@@ -1,0 +1,36 @@
+% Main trade-study runner. Results use a separate folder for each run.
+% Reload the saved baseline inputs on every run; no workspace msn is reused.
+msn = AEGAinputs();
+cfg = AEGAstudysettings2035(msn);
+% Current mission/technology plus the shared two-cruise-prop study layout.
+
+opt = struct();
+opt.current_configuration = true;
+opt.enforce_landing = cfg.enforce_landing;
+opt.WS = cfg.WS;                   % 12-48 lb/ft^2, plus current design input
+opt.AR_values = cfg.AR;            % AR8-18; keep the requested AR18 ceiling
+opt.AR_refine_step = 0.25;         % W/S resolution near each coarse minimum
+opt.AR_refine_half_width = 2;      % lb/ft^2 on either side of each minimum
+opt.CD0_scales = [1 .95 .90 .85];  % sensitivity ONLY, not proven drag savings
+opt.climb_gradients = [0 .01 .02 .03];
+opt.pack_Whkg_values = unique([300 350 400 450 msn.whkg]);
+opt.range_nm_values = unique([150 200 250 300 msn.range]);
+opt.reserve_min_values = unique([30 45 60 msn.reserve]);
+opt.eo = struct('selected_climb_gradient',.02,'climb_speed_kt',1.30*msn.VS0, ...
+    'VS_kt',msn.VS0,'approach_factor',1.30,'approach_deg',msn.approach_angle, ...
+    'failed_disk_CD',0,'takeoff_dCD',.03,'max_hp_lb',.60);
+% 2% climb is an exploratory project target. Both takeoff and landing-flap
+% go-around are checked. Failed-disk CD=0 assumes ideal feathering/folding.
+opt.do_AR = true;
+opt.do_drag = false; % optional separate sensitivity; focus this runner on W/S and AR
+opt.do_climb = false; % supporting diagnostic; small MTOW effect in saved preview
+opt.do_battery = false; % enable for the separate battery-technology study
+opt.do_mission = false; % enable for the separate range/reserve study
+opt.doplot = true;
+opt.save_plots = true;
+opt.output_dir = fullfile(fileparts(mfilename('fullpath')),'trade_results', ...
+    ['wing_' char(datetime('now','Format','yyyyMMdd_HHmmss_SSS'))]);
+
+trade2035 = AEGAwingtrades(msn,opt);
+% Outputs: CSV tables, MAT details, PNG plots, and MATLAB figures.
+% Results are steady-state sizing screens, not battery-diversion/trim proofs.

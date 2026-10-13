@@ -1,0 +1,43 @@
+function phases = AEGAmultispeedmission(msn,DG,S,b,base_drag_area,opt,Acruise)
+% Per-leg cruise states on the SAME aircraft. No airframe resizing by speed.
+% Mission profile is route distances/speeds plus a reserve speed.
+p = opt.mission_profile;
+validateattributes(p.route_speed_ktas,{'numeric'},{'vector','positive','finite'});
+validateattributes(p.route_distance_nm,{'numeric'},{'vector','nonnegative','finite'});
+validateattributes(p.reserve_speed_ktas,{'numeric'},{'scalar','positive','finite'});
+assert(numel(p.route_speed_ktas)==numel(p.route_distance_nm));
+assert(abs(sum(p.route_distance_nm)-msn.range)<1e-8, ...
+    'AEGAmultispeedmission:distance','Profile leg distances must sum to the design range.');
+speeds = [p.route_speed_ktas(:).' p.reserve_speed_ktas];
+distances = [p.route_distance_nm(:).' p.reserve_speed_ktas*msn.reserve/60];
+phases = repmat(struct(),1,numel(speeds));
+for j = 1:numel(speeds)
+    m = msn; m.Vkt = speeds(j);
+    g = AEGAtelescopingcruise(m,DG,S,b,base_drag_area,opt);
+    V = speeds(j)*1.688; q = .5*m.rho_cr*V^2;
+    eta_prop = 2/(1+sqrt(1+g.drag/(q*Acruise)))*m.prof;
+    eta = eta_prop*m.eta_m*m.eta_pe;
+    shaft = g.drag*V/(737.56*eta_prop);
+    label = "Route leg "+string(j);
+    if j==numel(speeds), label = "Reserve"; end
+    phases(j).phase = label;
+    phases(j).speed_ktas = speeds(j);
+    phases(j).distance_nm = distances(j);
+    phases(j).duration_hr = distances(j)/speeds(j);
+    phases(j).deployment = g.deployment;
+    phases(j).span_ft = g.span;
+    phases(j).area_ft2 = g.area;
+    phases(j).AR = g.AR;
+    phases(j).CL = g.CL;
+    phases(j).drag_lb = g.drag;
+    phases(j).shaft_kW = shaft;
+    phases(j).battery_kW = shaft/(m.eta_m*m.eta_pe);
+    phases(j).eta_total = eta;
+    % Use the same NM/energy constants as AEGAmission to preserve its result.
+    phases(j).energy_kWh = g.drag*distances(j)*6076.12/eta*(1+m.ovh)/2.6552e6;
+    phases(j).stall_speed_margin = sqrt(m.CLmax_clean/g.CL);
+    limit = m.CLmax_clean;
+    if isfield(opt,'cruise_CL_limit'), limit = opt.cruise_CL_limit; end
+    phases(j).clean_lift_pass = g.CL<=limit*(1+1e-8);
+end
+end

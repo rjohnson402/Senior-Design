@@ -1,0 +1,8 @@
+function m = AEGAlegacyinputs2035()
+% Explicit October 6 fixture for historical numerical regression checks.
+% Current studies always call AEGAinputs; this fixture is not a design option.
+m=AEGAinputs(); m.WS_design=32; m.AR=13; m.e_osw=.80;
+m.enforce_land=false; m.reverse_TW=.08; m.drag_buildup_scale=1;
+m.reverse_model='legacy-immediate'; % original instantaneous credit
+m=rmfield(m,'polar');
+end

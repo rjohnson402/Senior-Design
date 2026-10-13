@@ -1,0 +1,561 @@
+function study = AEGAtelescopingtrades(msn,opt)
+%AEGATELESCOPINGTRADES Fixed maximum AR; vary retractable fraction of span.
+%   study = AEGAtelescopingtrades(AEGAinputs(),opt)
+%   Fixed range: close MTOW, battery, structure and installed power.
+%   Fixed MTOW: hold maximum wing geometry fixed, allocate the remaining
+%   weight to batteries and invert the mission energy equation for range.
+%   Adaptive cruise; fully extended takeoff/climb/landing. Explicit optimistic
+%   2035 component mass cases and independent surface/seal quality sensitivity.
+%   Motor hubs remain on the fixed core throughout each design's deployment.
+%   RetractFraction=.10 means 10% of the maximum TOTAL span can retract;
+%   stroke per side=.10*b_max/2. Maximum AR is never swept.
+if nargin < 1 || isempty(msn), msn = AEGAinputs(); end
+if nargin < 2, opt = struct(); end
+[builds,seals,tech] = AEGAtelescopingassumptions2035();
+d = struct('AR_max',18,'WS_max',msn.WS_design, ...
+    'retract_fractions',0:.025:.20,'range_fixed_nm',msn.range, ...
+    'MTOW_fixed_lb',[],'cruise_deployment','optimal', ...
+    'mechanism_builds',builds,'nominal_build_index',3, ...
+    'seal_cases',seals,'nominal_seal_index',1,'technology',tech, ...
+    'adaptive_speeds_ktas',80:5:200,'do_drag_sensitivity',true, ...
+    'additional_hardware_allowances_lb',0:2:30, ...
+    'high_lift_diameter_ft',2.8,'cruise_diameter_ft',4.5, ...
+    'high_lift_hub_fractions',[.21 .39 .57], ...
+    'enforce_battery_out',true,'size_options',struct(), ...
+    'doplot',true,'save_plots',true,'figure_visible','on','output_dir','');
+for name = fieldnames(d).'
+    if ~isfield(opt,name{1}), opt.(name{1}) = d.(name{1}); end
+end
+validateattributes(opt.AR_max,{'numeric'},{'scalar','positive','finite'});
+validateattributes(opt.WS_max,{'numeric'},{'scalar','positive','finite'});
+validateattributes(opt.range_fixed_nm,{'numeric'},{'scalar','positive','finite'});
+validateattributes(opt.retract_fractions,{'numeric'},{'vector','real','finite','>=',0,'<',1});
+assert(~isfield(opt,'penalty_scales'),'AEGAtelescopingtrades:obsolete', ...
+    'penalty_scales is obsolete. Edit mechanism_builds component targets and seal_cases instead.');
+validateattributes(opt.adaptive_speeds_ktas,{'numeric'},{'vector','positive','finite'});
+validateattributes(opt.additional_hardware_allowances_lb,{'numeric'},{'vector','nonnegative','finite'});
+validateattributes(opt.nominal_build_index,{'numeric'},{'scalar','integer','positive','<=',numel(opt.mechanism_builds)});
+validateattributes(opt.nominal_seal_index,{'numeric'},{'scalar','integer','positive','<=',numel(opt.seal_cases)});
+validateattributes(opt.high_lift_diameter_ft,{'numeric'},{'scalar','positive','finite'});
+validateattributes(opt.cruise_diameter_ft,{'numeric'},{'scalar','positive','finite'});
+validateattributes(opt.high_lift_hub_fractions,{'numeric'},{'vector','real','finite','numel',3,'>',0,'<',1});
+assert(msn.NPROP==8 && msn.use_blown_wind, ...
+    'AEGAtelescopingtrades:architecture','This study uses six high-lift and two cruise propellers.');
+assert(any(strcmp(opt.figure_visible,{'on','off'})));
+opt.retract_fractions = unique([0 opt.retract_fractions(:).']);
+assert(opt.high_lift_hub_fractions(end) < 1-max(opt.retract_fractions), ...
+    'AEGAtelescopingtrades:core','High-lift hubs must remain inboard of the shortest fixed core.');
+msn.AR = opt.AR_max;
+msn.range = opt.range_fixed_nm;
+msn.whkg = opt.technology.pack_Whkg; msn.fusable = opt.technology.usable_fraction;
+msn.kWkg_m = opt.technology.motor_kWkg; msn.kWkg_pe = opt.technology.inverter_kWkg;
+msn.eta_m = opt.technology.motor_efficiency; msn.eta_pe = opt.technology.inverter_efficiency;
+
+% Reference has the same maximum AR, prop hardware and mission as the trade.
+% An empty fixed-MTOW input selects the converged, non-telescoping reference.
+[ref_m,ref_o] = case_inputs(msn,opt,0,opt.nominal_build_index);
+reference = AEGAtrade_size(ref_m,opt.WS_max,ref_o);
+assert(reference.converged,'AEGAtelescopingtrades:reference', ...
+    'Non-telescoping reference did not converge: %s',reference.status);
+if isempty(opt.MTOW_fixed_lb), opt.MTOW_fixed_lb = reference.MTOW; end
+validateattributes(opt.MTOW_fixed_lb,{'numeric'},{'scalar','finite','>',msn.payload});
+
+fixed_range_rows = repmat(empty_row(0,opt.nominal_build_index,opt,msn,'Fixed range'),0,1);
+fixed_mtow_rows = repmat(empty_row(0,opt.nominal_build_index,opt,msn,'Fixed MTOW'),0,1);
+range_details = {}; mtow_details = {};
+for scale = 1:numel(opt.mechanism_builds)
+    for r = opt.retract_fractions
+        [m,o] = case_inputs(msn,opt,r,scale);
+        row = empty_row(r,scale,opt,msn,'Fixed range');
+        try
+            sized = AEGAtrade_size(m,opt.WS_max,o);
+            row = fill_row(row,sized,opt.range_fixed_nm);
+            row.PassesScreen = sized.feasible;
+            row.Status = string(sized.status);
+            range_details{end+1} = sized; %#ok<AGROW>
+        catch err
+            row.Status = string(err.identifier)+": "+string(err.message);
+            range_details{end+1} = struct('error',err.message); %#ok<AGROW>
+        end
+        row.DetailIndex = numel(range_details);
+        fixed_range_rows(end+1) = row; %#ok<AGROW>
+
+        row = empty_row(r,scale,opt,msn,'Fixed MTOW');
+        row.MTOW_lb = opt.MTOW_fixed_lb;
+        try
+            % One evaluation at prescribed gross weight establishes dry mass
+            % and power. Changing mission range then changes only battery mass.
+            o.evaluate_only_MTOW = opt.MTOW_fixed_lb;
+            at_weight = AEGAtrade_size(m,opt.WS_max,o);
+            nonbattery = at_weight.W.empty-at_weight.W.battery;
+            battery_lb = opt.MTOW_fixed_lb-msn.payload-nonbattery;
+            pack_kWh = battery_lb/2.20462*msn.whkg/1000;
+            usable_kWh = pack_kWh*msn.fusable;
+            reserve_nm = msn.reserve/60*msn.Vkt;
+            kWh_per_nm = at_weight.mission.E_range/(msn.range+reserve_nm);
+            capacity_range = usable_kWh/kWh_per_nm-reserve_nm;
+            project_ok = battery_lb>0 && capacity_range>=0;
+            xc_ok = ~msn.enforce_ppl_xc || ...
+                usable_kWh>=at_weight.mission.E_ppl_xc-1e-8;
+            m.range = max(0,capacity_range);
+            closed = AEGAtrade_size(m,opt.WS_max,o);
+            row = fill_row(row,closed,NaN);
+            row.MaximumProjectRange_nm = capacity_range;
+            row.AvailableBattery_lb = battery_lb;
+            row.AvailablePack_kWh = pack_kWh;
+            row.AvailableUsable_kWh = usable_kWh;
+            row.PPLMissionPass = xc_ok;
+            row.PassesScreen = project_ok && xc_ok && closed.feasible;
+            % The single-trip capacity remains meaningful when the separate
+            % three-stop mission fails. Preserve it, with an explicit flag.
+            if project_ok && closed.performance_feasible, row.Range_nm = capacity_range; end
+            if row.PassesScreen
+                row.Status = "ok";
+            elseif ~project_ok
+                row.Status = "dry mass or reserve exceeds fixed-MTOW battery budget";
+            elseif ~xc_ok
+                row.Status = "fixed-MTOW battery cannot meet enforced PPL cross-country mission";
+            else
+                row.Status = string(closed.status);
+            end
+            closed.available_battery_lb = battery_lb;
+            closed.available_pack_kWh = pack_kWh;
+            closed.available_usable_kWh = usable_kWh;
+            closed.maximum_project_range_nm = capacity_range;
+            mtow_details{end+1} = closed; %#ok<AGROW>
+        catch err
+            row.Status = string(err.identifier)+": "+string(err.message);
+            mtow_details{end+1} = struct('error',err.message); %#ok<AGROW>
+        end
+        row.DetailIndex = numel(mtow_details);
+        fixed_mtow_rows(end+1) = row; %#ok<AGROW>
+    end
+end
+study.fixed_range = struct2table(fixed_range_rows);
+study.fixed_MTOW = struct2table(fixed_mtow_rows);
+study.fixed_range.DeltaMTOW_lb = study.fixed_range.MTOW_lb-reference.MTOW;
+% Use the fixed-weight baseline's exact capacity inversion as the range datum.
+base = study.fixed_MTOW.RetractFraction==0 & study.fixed_MTOW.BuildIndex==opt.nominal_build_index;
+study.fixed_MTOW.DeltaRange_nm = study.fixed_MTOW.Range_nm-study.fixed_MTOW.Range_nm(base);
+study.reference = reference;
+study.inputs = msn;
+study.options = opt;
+study.fixed_range_details = range_details;
+study.fixed_MTOW_details = mtow_details;
+study.component_assumptions = struct2table(opt.mechanism_builds);
+study.seal_assumptions = struct2table(opt.seal_cases);
+study.adaptive_cruise = adaptive_schedule(study);
+study.drag_sensitivity = drag_sensitivity(study);
+study.mass_allowance_sensitivity = mass_allowance_sensitivity(study);
+study.provenance = struct('executed_at',char(datetime('now')), ...
+    'MATLAB_version',version,'model','AEGA coupled sizing with telescoping cruise geometry');
+study.provenance.research_document = 'docs/TELESCOPING_TRADE.md';
+study.figures = gobjects(0);
+
+if ~isempty(opt.output_dir)
+    if ~isfolder(opt.output_dir), mkdir(opt.output_dir); end
+    writetable(study.fixed_range,fullfile(opt.output_dir,'01_MTOW_at_fixed_range.csv'));
+    writetable(study.fixed_MTOW,fullfile(opt.output_dir,'02_range_at_fixed_MTOW.csv'));
+    writetable(study.component_assumptions,fullfile(opt.output_dir,'05_component_assumptions.csv'));
+    writetable(study.seal_assumptions,fullfile(opt.output_dir,'06_seal_assumptions.csv'));
+    writetable(study.adaptive_cruise,fullfile(opt.output_dir,'07_adaptive_cruise.csv'));
+    if ~isempty(study.drag_sensitivity)
+        writetable(study.drag_sensitivity,fullfile(opt.output_dir,'08_drag_sensitivity.csv'));
+    end
+    writetable(study.mass_allowance_sensitivity,fullfile(opt.output_dir,'11_extra_hardware_mass_sensitivity.csv'));
+end
+if opt.doplot
+    study.figures = make_plots(study);
+end
+if ~isempty(opt.output_dir)
+    save_results(study,fullfile(opt.output_dir,'telescoping_trade_results.mat'));
+    write_notes(study);
+end
+nominal_range = study.fixed_range(study.fixed_range.BuildIndex==opt.nominal_build_index,:);
+nominal_mtow = study.fixed_MTOW(study.fixed_MTOW.BuildIndex==opt.nominal_build_index,:);
+fprintf('\nTelescoping trade: maximum AR %.4f; full-wing W/S %.2f lb/ft^2.\n',opt.AR_max,opt.WS_max);
+fprintf('Schedule: %s; extended takeoff, climb and landing.\n',cruise_schedule_label(opt));
+fprintf('Fixed range %.1f nm + %.1f min reserve; fixed MTOW %.2f lb.\n', ...
+    opt.range_fixed_nm,msn.reserve,opt.MTOW_fixed_lb);
+disp(nominal_range(:,{'RetractPercent','MTOW_lb','DeltaMTOW_lb','CruiseDeployment', ...
+    'CruiseAR','Mechanism_lb','PassesScreen'}));
+disp(nominal_mtow(:,{'RetractPercent','MTOW_lb','Range_nm','DeltaRange_nm', ...
+    'CruiseDeployment','PassesScreen'}));
+end
+
+function [m,o] = case_inputs(msn,opt,r,scale)
+m = msn;
+m.prop_D_side_ft = [repmat(opt.high_lift_diameter_ft,1,3) opt.cruise_diameter_ft];
+m.prop_y_fraction_side = [opt.high_lift_hub_fractions(:).' 1-r];
+o = opt.size_options;
+o.enforce_battery_out = opt.enforce_battery_out;
+o.retract_fraction = r;
+o.cruise_deployment = opt.cruise_deployment;
+o.cruise_disk_indices = [4 8];
+o.mechanism_build = opt.mechanism_builds(scale);
+o.joint_seal = opt.seal_cases(opt.nominal_seal_index);
+o.wing_mass_factor = opt.technology.wing_mass_factor;
+if ~isfield(o,'initial_MTOW'), o.initial_MTOW = 2800; end
+end
+
+function row = empty_row(r,scale,opt,msn,comparison)
+row = struct('Comparison',string(comparison),'RetractFraction',r, ...
+    'RetractPercent',100*r,'BuildIndex',scale,'Build',opt.mechanism_builds(scale).name,'AR_max',opt.AR_max, ...
+    'WS_max_lb_ft2',opt.WS_max,'TargetRange_nm',opt.range_fixed_nm, ...
+    'Reserve_min',msn.reserve,'CruiseSpeed_ktas',msn.Vkt, ...
+    'MTOW_lb',NaN,'Range_nm',NaN,'MaximumProjectRange_nm',NaN, ...
+    'SpanMax_ft',NaN,'SpanMin_ft',NaN,'WingMax_ft2',NaN,'WingMin_ft2',NaN, ...
+    'AR_min',NaN,'StrokeEach_ft',NaN,'CruiseDeployment',NaN, ...
+    'CruiseExtensionEach_ft',NaN,'CruiseSpan_ft',NaN,'CruiseArea_ft2',NaN, ...
+    'CruiseAR',NaN,'CruisePower_kW',NaN,'InstalledShaft_kW',NaN, ...
+    'CruiseHubY_ft',NaN,'InstalledDiskArea_ft2',NaN,'CruiseDiskArea_ft2',NaN, ...
+    'Wing_lb',NaN,'WingBeforeTechnology_lb',NaN,'Mechanism_lb',NaN, ...
+    'Actuators_lb',0,'Guides_lb',0,'LocksBearings_lb',0,'ControlsWiring_lb',0, ...
+    'Seals_lb',0,'OverlapCaps_lb',0,'OverlapWebs_lb',0,'OverlapSkin_lb',0, ...
+    'LocalFittings_lb',0,'TorsionBucklingReserve_lb',0,'OverlapEach_m',0, ...
+    'UltimateShearEach_N',0,'UltimateMomentEach_Nm',0, ...
+    'JointCruiseDragArea_ft2',NaN,'JointExtendedDragArea_ft2',NaN,'NonBattery_lb',NaN, ...
+    'Battery_lb',NaN,'Pack_kWh',NaN,'Usable_kWh',NaN, ...
+    'AvailableBattery_lb',NaN,'AvailablePack_kWh',NaN,'AvailableUsable_kWh',NaN, ...
+    'Landing_ft',NaN,'LandingCheckPass',false,'CleanStallExtended_kt',NaN, ...
+    'PPLMissionPass',false,'WeightResidual_lb',NaN,'Converged',false, ...
+    'PassesScreen',false,'MissionDriver',"",'PowerDriver',"",'Status',"",'DetailIndex',0);
+end
+
+function row = fill_row(row,out,range_nm)
+g = out.cruise_geometry;
+row.MTOW_lb = out.MTOW; row.Range_nm = range_nm;
+row.SpanMax_ft = out.span; row.SpanMin_ft = g.retracted_span;
+row.WingMax_ft2 = out.SW; row.WingMin_ft2 = g.retracted_area;
+row.AR_min = g.retracted_AR; row.StrokeEach_ft = g.stroke_each_ft;
+row.CruiseDeployment = g.deployment;
+row.CruiseExtensionEach_ft = g.exposed_stroke_each_ft;
+row.CruiseSpan_ft = g.span; row.CruiseArea_ft2 = g.area; row.CruiseAR = g.AR;
+row.CruisePower_kW = out.Pcruise_kW; row.InstalledShaft_kW = out.PTO_kW;
+row.CruiseHubY_ft = out.prop_layout.y_side(end);
+row.InstalledDiskArea_ft2 = out.Adisc; row.CruiseDiskArea_ft2 = out.cruise_Adisc;
+row.Wing_lb = out.W.wing; row.Mechanism_lb = out.W.telescoping;
+row.WingBeforeTechnology_lb = out.W.wing_before_technology;
+row.JointCruiseDragArea_ft2 = g.joint_drag_area_ft2;
+row.JointExtendedDragArea_ft2 = out.joint_extended_drag_area_ft2;
+h = out.mechanism_components;
+for name = fieldnames(h).'
+    if isfield(row,name{1}), row.(name{1}) = h.(name{1}); end
+end
+if isfield(h,'overlap_each_m')
+    row.OverlapEach_m = h.overlap_each_m;
+    row.UltimateShearEach_N = h.ultimate_shear_each_N;
+    row.UltimateMomentEach_Nm = h.ultimate_moment_each_Nm;
+end
+row.NonBattery_lb = out.W.empty-out.W.battery;
+row.Battery_lb = out.W.battery; row.Pack_kWh = out.pack_kWh; row.Usable_kWh = out.Ebat;
+row.Landing_ft = out.con.S_land_ft; row.LandingCheckPass = out.con.landing_ok;
+row.CleanStallExtended_kt = out.VS1;
+row.PPLMissionPass = ~out.msn.enforce_ppl_xc || out.Ebat>=out.mission.E_ppl_xc-1e-8;
+row.WeightResidual_lb = out.weight_residual_lb; row.Converged = out.converged;
+row.MissionDriver = string(out.mission.driver); row.PowerDriver = string(out.power_driver);
+end
+
+function figures = make_plots(s)
+o = s.options;
+figures = gobjects(4,1);
+figures(1) = figure('Name','Telescoping wing: MTOW and range', ...
+    'Color','w','Visible',o.figure_visible,'Position',[80 80 1100 480]);
+t = tiledlayout(figures(1),1,2,'TileSpacing','compact','Padding','compact');
+title(t,sprintf('Maximum AR %.2f | %.0f KTAS | %s',o.AR_max,s.inputs.Vkt,cruise_schedule_label(o)));
+% Explicit palette: inherited constraints set the root color order to black.
+palette = [.40 .40 .40; 0 .447 .741; .850 .325 .098; .466 .674 .188];
+colors = [0 .447 .741; .85 .325 .098; .466 .674 .188; .494 .184 .556; ...
+    .929 .694 .125; .301 .745 .933; .635 .078 .184];
+for panel = 1:2
+    ax = nexttile(t); hold(ax,'on'); grid(ax,'on'); box(ax,'on');
+    for j = 1:numel(o.mechanism_builds)
+        scale = j; color = colors(mod(j-1,size(colors,1))+1,:);
+        if panel==1
+            a = s.fixed_range(s.fixed_range.BuildIndex==scale,:); y = a.MTOW_lb;
+        else
+            a = s.fixed_MTOW(s.fixed_MTOW.BuildIndex==scale,:); y = a.Range_nm;
+        end
+        if panel==1, y(~a.PassesScreen) = NaN; end
+        plot(ax,a.RetractPercent,y,'-o','Color',color,'LineWidth',1.5, ...
+            'DisplayName',o.mechanism_builds(j).name);
+        if panel==2 && any(~a.PassesScreen & isfinite(y))
+            bad = ~a.PassesScreen & isfinite(y);
+            plot(ax,a.RetractPercent(bad),y(bad),'x','Color',color, ...
+                'MarkerSize',10,'LineWidth',1.5,'HandleVisibility','off');
+        end
+    end
+    xlabel(ax,'Retractable fraction of maximum span (%)');
+    if panel==1
+        ylabel(ax,'Sized MTOW (lb)');
+        title(ax,sprintf('Fixed range: %.0f nm + %.0f min reserve',o.range_fixed_nm,s.inputs.reserve));
+    else
+        ylabel(ax,'Single-trip range before reserve (nm)');
+        title(ax,sprintf('Fixed MTOW: %.0f lb + %.0f min reserve',o.MTOW_fixed_lb,s.inputs.reserve));
+        subtitle(ax,'x marks cases failing another enabled mission or sizing screen');
+    end
+    legend(ax,'Location','best','FontSize',8);
+end
+figures(2) = figure('Name','Telescoping wing: selected geometry and hardware', ...
+    'Color','w','Visible',o.figure_visible,'Position',[100 100 1100 750]);
+t = tiledlayout(figures(2),2,2,'TileSpacing','compact','Padding','compact');
+title(t,'2035 lightweight target; fixed-MTOW designs');
+a = s.fixed_MTOW(s.fixed_MTOW.BuildIndex==o.nominal_build_index,:);
+ax = nexttile(t); hold(ax,'on'); grid(ax,'on');
+plot(ax,a.RetractPercent,100*a.CruiseDeployment,'-o','Color',palette(2,:),'LineWidth',1.5);
+ylim(ax,[-5 105]); xlabel(ax,'Retractable span (%)'); ylabel(ax,'Available stroke deployed in cruise (%)');
+title(ax,'Cruise deployment');
+ax = nexttile(t); hold(ax,'on'); grid(ax,'on');
+plot(ax,a.RetractPercent,a.AR_max,'-','Color',palette(1,:),'LineWidth',1.5,'DisplayName','Maximum AR');
+plot(ax,a.RetractPercent,a.AR_min,'--o','Color',palette(3,:),'LineWidth',1.5,'DisplayName','Retracted AR');
+plot(ax,a.RetractPercent,a.CruiseAR,':s','Color',palette(2,:),'LineWidth',1.5,'DisplayName','Selected cruise AR');
+xlabel(ax,'Retractable span (%)'); ylabel(ax,'Aspect ratio'); legend(ax,'Location','best');
+title(ax,'Maximum AR stays fixed');
+ax = nexttile(t); hold(ax,'on'); grid(ax,'on');
+plot(ax,a.RetractPercent,a.Mechanism_lb,'-o','Color',palette(2,:),'LineWidth',1.5);
+xlabel(ax,'Retractable span (%)'); ylabel(ax,'Additional telescoping hardware (lb)');
+title(ax,'Assumed mass before empty-weight margin');
+ax = nexttile(t); hold(ax,'on'); grid(ax,'on');
+plot(ax,a.RetractPercent,a.AvailableBattery_lb,'-o','Color',palette(2,:),'LineWidth',1.5);
+xlabel(ax,'Retractable span (%)'); ylabel(ax,'Battery mass available at fixed MTOW (lb)');
+title(ax,'Battery weight budget');
+figures(3) = figure('Name','Adaptive cruise extension versus speed', ...
+    'Color','w','Visible',o.figure_visible,'Position',[120 120 1150 530]);
+t = tiledlayout(figures(3),1,2,'TileSpacing','compact','Padding','compact');
+title(t,'Cruise-adaptive span | fixed aircraft and motor locations at every speed');
+for panel = 1:2
+    ax = nexttile(t); hold(ax,'on'); grid(ax,'on'); box(ax,'on');
+    values = o.retract_fractions(o.retract_fractions>0);
+    if numel(values)>4, values = values(round(linspace(1,numel(values),4))); end
+    for j = 1:numel(values)
+        a = s.adaptive_cruise(s.adaptive_cruise.RetractFraction==values(j),:);
+        if panel==1, y = 100*a.Deployment; else, y = a.BatteryPower_kW; end
+        plot(ax,a.Speed_ktas,y,'-','Color',colors(j,:),'LineWidth',1.8, ...
+            'DisplayName',sprintf('%.1f%% retractable span',100*values(j)));
+        bad = ~a.WithinBasicCruiseScreen;
+        plot(ax,a.Speed_ktas(bad),y(bad),'x','Color',colors(j,:), ...
+            'MarkerSize',5,'HandleVisibility','off');
+    end
+    xline(ax,s.inputs.Vkt,':','Design cruise','LabelVerticalAlignment','bottom','HandleVisibility','off');
+    xline(ax,s.inputs.Vkt+s.inputs.dV_ne,'--','Model speed ceiling','HandleVisibility','off');
+    xlabel(ax,'Cruise speed (KTAS)');
+    if panel==1
+        ylabel(ax,'Available stroke deployed (%)'); ylim(ax,[-5 105]);
+        title(ax,'Minimum-power deployment at each speed');
+    else
+        ylabel(ax,'Battery power (kW)'); title(ax,'Power on the same installed hardware');
+    end
+    subtitle(ax,'x = fails clean lift, assigned motor power, or model speed ceiling');
+    legend(ax,'Location','best','FontSize',8);
+end
+figures(4) = figure('Name','Physical mechanism mass sensitivity', ...
+    'Color','w','Visible',o.figure_visible,'Position',[140 140 1150 560]);
+t = tiledlayout(figures(4),1,2,'TileSpacing','compact','Padding','compact');
+title(t,'Added hardware before 5% aircraft margin | optimistic component targets');
+a = s.fixed_MTOW(s.fixed_MTOW.BuildIndex==o.nominal_build_index,:);
+ax = nexttile(t); grid(ax,'on');
+component = [a.Actuators_lb a.Guides_lb a.LocksBearings_lb a.ControlsWiring_lb ...
+    a.Seals_lb a.OverlapCaps_lb+a.OverlapWebs_lb+a.OverlapSkin_lb ...
+    a.LocalFittings_lb+a.TorsionBucklingReserve_lb];
+h = bar(ax,a.RetractPercent,component,'stacked');
+for j = 1:numel(h), h(j).FaceColor = colors(j,:); end
+xlabel(ax,'Retractable fraction of maximum span (%)'); ylabel(ax,'Added hardware (lb)');
+title(ax,'Lightweight target component breakdown');
+legend(ax,{'Actuation','Guides','Locks / bearings','Controls / wiring','Seals', ...
+    'Overlap structure','Fittings / stiffness reserve'},'Location','northwest','FontSize',8);
+ax = nexttile(t); hold(ax,'on'); grid(ax,'on');
+values = o.retract_fractions(o.retract_fractions>0);
+if numel(values)>4, values = values(round(linspace(1,numel(values),4))); end
+for j = 1:numel(values)
+    a = s.mass_allowance_sensitivity(s.mass_allowance_sensitivity.RetractFraction==values(j),:);
+    plot(ax,a.TotalMechanism_lb,a.Range_nm,'-','Color',colors(j,:),'LineWidth',1.8, ...
+        'DisplayName',sprintf('%.1f%% retractable span',100*values(j)));
+    physical = s.fixed_MTOW(s.fixed_MTOW.RetractFraction==values(j),:);
+    plot(ax,physical.Mechanism_lb,physical.Range_nm,'o','Color',colors(j,:), ...
+        'MarkerFaceColor','w','HandleVisibility','off');
+end
+xlabel(ax,'Actual computed total added hardware (lb)'); ylabel(ax,'Fixed-MTOW single-trip range (nm)');
+title(ax,'Weight sensitivity with fixed seal quality');
+subtitle(ax,'o = seven component builds; lines = 0:2:30 lb extra hardware'); legend(ax,'Location','best');
+for j = 1:numel(figures)
+    if isprop(figures(j),'Theme'), figures(j).Theme = 'light'; end
+    set(findall(figures(j),'Type','axes'),'Color','w','XColor','k','YColor','k', ...
+        'GridColor',[.6 .6 .6],'GridAlpha',.25);
+    set(findall(figures(j),'Type','text'),'Color','k');
+    set(findall(figures(j),'Type','legend'),'Color','w','TextColor','k');
+end
+if o.save_plots && ~isempty(o.output_dir)
+    stems = {'03_MTOW_and_range','04_selected_geometry_and_mass', ...
+        '09_adaptive_cruise','10_mechanism_components_and_weight'};
+    for j = 1:numel(figures)
+        exportgraphics(figures(j),fullfile(o.output_dir,[stems{j} '.png']),'Resolution',180);
+        savefig(figures(j),fullfile(o.output_dir,[stems{j} '.fig']));
+    end
+end
+end
+
+function rows = adaptive_schedule(s)
+% Same sized airframe at every speed. No structural or propulsion resizing.
+o = s.options; rows = [];
+a = s.fixed_MTOW(s.fixed_MTOW.BuildIndex==o.nominal_build_index,:);
+for j = 1:height(a)
+    if ~isfinite(a.CruisePower_kW(j)), continue; end
+    out = s.fixed_MTOW_details{a.DetailIndex(j)};
+    for v = o.adaptive_speeds_ktas
+        m = out.msn; m.Vkt = v;
+        opts = out.options; opts.cruise_deployment = 'optimal';
+        g = AEGAtelescopingcruise(m,out.MTOW,out.SW,out.span,out.base_drag_area_ft2,opts);
+        [shaft,battery] = cruise_power(m,g.drag,out.cruise_Adisc);
+        opts.cruise_deployment = 1;
+        ext = AEGAtelescopingcruise(m,out.MTOW,out.SW,out.span,out.base_drag_area_ft2,opts);
+        [~,pfull] = cruise_power(m,ext.drag,out.cruise_Adisc);
+        opts.cruise_deployment = 0;
+        ret = AEGAtelescopingcruise(m,out.MTOW,out.SW,out.span,out.base_drag_area_ft2,opts);
+        [~,pret] = cruise_power(m,ret.drag,out.cruise_Adisc);
+        liftok = g.CL<=m.CLmax_clean*(1+1e-8);
+        powerok = shaft<=out.PTO_kW*out.cruise_rating_fraction*(1+1e-8);
+        speedok = v<=s.inputs.Vkt+s.inputs.dV_ne;
+        row = struct('RetractFraction',a.RetractFraction(j),'Speed_ktas',v, ...
+            'MTOW_lb',out.MTOW,'SpanMax_ft',out.span,'Deployment',g.deployment, ...
+            'CruiseAR',g.AR,'CruiseSpan_ft',g.span,'CruiseArea_ft2',g.area, ...
+            'CleanCL',g.CL,'BatteryPower_kW',battery,'ShaftPower_kW',shaft, ...
+            'FullExtensionPower_kW',pfull,'FullRetractionPower_kW',pret, ...
+            'SavingVsExtended_percent',100*(pfull-battery)/pfull, ...
+            'JointDragArea_ft2',g.joint_drag_area_ft2,'CruiseHubY_ft',out.prop_layout.y_side(end), ...
+            'InstalledPower_kW',out.PTO_kW,'CleanLiftPass',liftok, ...
+            'RequiredCruiseMotorEach_kW',shaft/2, ...
+            'AssignedCruiseMotorEach_kW',out.PTO_kW*out.cruise_rating_fraction/2, ...
+            'CruiseMotorPowerPass',powerok,'WithinModelSpeedCeiling',speedok, ...
+            'WithinBasicCruiseScreen',liftok && powerok && speedok);
+        rows = [rows; row]; %#ok<AGROW>
+    end
+end
+if isempty(rows), rows = table(); else, rows = struct2table(rows); end
+end
+
+function rows = drag_sensitivity(s)
+% Hold all component-mass targets fixed; vary only surface/seal geometry.
+rows = []; o = s.options;
+if ~o.do_drag_sensitivity, return; end
+for j = 1:numel(o.seal_cases)
+    for r = o.retract_fractions
+        row = struct('Seal',o.seal_cases(j).name,'RetractFraction',r, ...
+            'MTOW_at_fixed_range_lb',NaN,'Range_at_fixed_MTOW_nm',NaN, ...
+            'JointDragArea_ft2',NaN,'MechanismAtFixedMTOW_lb',NaN, ...
+            'FixedRangePass',false,'FixedMTOWPass',false,'Status',"");
+        try
+            [m,opts] = case_inputs(s.inputs,o,r,o.nominal_build_index);
+            opts.joint_seal = o.seal_cases(j);
+            sized = AEGAtrade_size(m,o.WS_max,opts);
+            row.MTOW_at_fixed_range_lb = sized.MTOW;
+            row.FixedRangePass = sized.feasible;
+            opts.evaluate_only_MTOW = o.MTOW_fixed_lb;
+            at = AEGAtrade_size(m,o.WS_max,opts);
+            available = o.MTOW_fixed_lb-m.payload-(at.W.empty-at.W.battery);
+            usable = available/2.20462*m.whkg/1000*m.fusable;
+            reserve = m.reserve/60*m.Vkt;
+            range = usable/(at.mission.E_range/(m.range+reserve))-reserve;
+            row.Range_at_fixed_MTOW_nm = range;
+            row.FixedMTOWPass = range>=0 && at.performance_feasible && ...
+                (~m.enforce_ppl_xc || usable>=at.mission.E_ppl_xc-1e-8);
+            row.JointDragArea_ft2 = at.cruise_geometry.joint_drag_area_ft2;
+            row.MechanismAtFixedMTOW_lb = at.W.telescoping;
+            row.Status = "ok";
+            if ~row.FixedRangePass || ~row.FixedMTOWPass, row.Status = "an enabled mission or sizing screen failed"; end
+        catch err
+            row.Status = string(err.identifier)+": "+string(err.message);
+        end
+        rows = [rows; row]; %#ok<AGROW>
+    end
+end
+rows = struct2table(rows);
+end
+
+function [shaft,battery] = cruise_power(m,drag,Adisc)
+V = m.Vkt*1.688; q = .5*m.rho_cr*V^2;
+eta = 2/(1+sqrt(1+drag/(q*Adisc)))*m.prof;
+shaft = drag*V/(737.56*eta); battery = shaft/(m.eta_m*m.eta_pe);
+end
+
+function rows = mass_allowance_sensitivity(s)
+% Exact fixed-MTOW mass sensitivity at unchanged geometry, drag and power.
+template = struct('RetractFraction',0,'BaseMechanism_lb',0,'ExtraHardware_lb',0, ...
+    'TotalMechanism_lb',0,'Range_nm',0,'AvailableBattery_lb',0, ...
+    'AvailableUsable_kWh',0,'PassesMission',false);
+rows = repmat(template,0,1); o = s.options;
+a = s.fixed_MTOW(s.fixed_MTOW.BuildIndex==o.nominal_build_index,:);
+for j = 1:height(a)
+    if a.RetractFraction(j)==0 || ~isfinite(a.Range_nm(j)), continue; end
+    out = s.fixed_MTOW_details{a.DetailIndex(j)};
+    kWh_per_nm = out.mission.E_range/(a.Range_nm(j)+s.inputs.reserve/60*s.inputs.Vkt);
+    for extra = o.additional_hardware_allowances_lb
+        remaining = a.AvailableBattery_lb(j)-(1+s.inputs.fmarg)*extra;
+        usable = remaining/2.20462*s.inputs.whkg/1000*s.inputs.fusable;
+        range = usable/kWh_per_nm-s.inputs.reserve/60*s.inputs.Vkt;
+        row = struct('RetractFraction',a.RetractFraction(j), ...
+            'BaseMechanism_lb',a.Mechanism_lb(j),'ExtraHardware_lb',extra, ...
+            'TotalMechanism_lb',a.Mechanism_lb(j)+extra,'Range_nm',range, ...
+            'AvailableBattery_lb',remaining,'AvailableUsable_kWh',usable, ...
+            'PassesMission',range>=0 && out.performance_feasible && ...
+            (~s.inputs.enforce_ppl_xc || usable>=out.mission.E_ppl_xc-1e-8));
+        rows = [rows; row]; %#ok<AGROW>
+    end
+end
+rows = struct2table(rows);
+end
+
+function save_results(study,filename)
+% Editable figures are saved separately as FIG files. Keep MAT data portable
+% without reopening windows or serializing graphics objects on load.
+study = rmfield(study,'figures');
+save(filename,'study');
+end
+
+function label = cruise_schedule_label(o)
+if isnumeric(o.cruise_deployment)
+    if o.cruise_deployment==0
+        label = 'fully retracted cruise';
+    elseif o.cruise_deployment==1
+        label = 'fully extended cruise';
+    else
+        label = sprintf('cruise at %.0f%% of available stroke',100*o.cruise_deployment);
+    end
+else
+    label = 'lowest-power cruise deployment';
+end
+end
+
+function write_notes(s)
+o = s.options;
+fid = fopen(fullfile(o.output_dir,'RUN_NOTES.txt'),'w');
+assert(fid>=0,'AEGAtelescopingtrades:notes','Could not write run notes.');
+guard = onCleanup(@() fclose(fid));
+fprintf(fid,'Executed in MATLAB %s at %s\n',s.provenance.MATLAB_version,s.provenance.executed_at);
+fprintf(fid,'Maximum AR: %.8f; maximum-wing W/S: %.3f lb/ft^2\n',o.AR_max,o.WS_max);
+fprintf(fid,'Fixed range: %.3f nm; fixed MTOW: %.3f lb; reserve: %.1f min\n', ...
+    o.range_fixed_nm,o.MTOW_fixed_lb,s.inputs.reserve);
+fprintf(fid,'Retraction is a fraction of fully extended total span, not an AR multiplier.\n');
+fprintf(fid,'Schedule: %s; takeoff, climb, landing and go-around use maximum span.\n',cruise_schedule_label(o));
+fprintf(fid,'Geometry is a common fully extended trapezoid with a tapered outer sliding panel.\n');
+fprintf(fid,'At fixed range, maximum area/span resize with MTOW at fixed full-wing W/S and AR.\n');
+fprintf(fid,'At fixed MTOW, maximum area/span stay fixed; remaining gross-weight budget becomes battery.\n');
+fprintf(fid,'Six %.2f-ft high-lift disks stow in cruise; two %.2f-ft cruise disks stay active.\n', ...
+    o.high_lift_diameter_ft,o.cruise_diameter_ft);
+fprintf(fid,'Motors are fixed at each design''s core tip; they never move with deployment.\n');
+fprintf(fid,'No NASA wingtip-vortex credit; e=%.3f in every state.\n',s.inputs.e_osw);
+fprintf(fid,'2035 pack %.0f Wh/kg, %.2f usable; full-wing mass factor %.2f relative to already-composite FLOPS wing.\n', ...
+    s.inputs.whkg,s.inputs.fusable,o.technology.wing_mass_factor);
+fprintf(fid,'Seven explicit lightweight bill-of-material targets replace 0/1/2 penalty multipliers.\n');
+fprintf(fid,'Incremental sleeve/cap/web mass uses fully extended elliptic lift at %.2fg ultimate; NO load alleviation credit.\n',s.inputs.ULF);
+fprintf(fid,'Nominal build: %s; independent nominal seal: %s.\n', ...
+    o.mechanism_builds(o.nominal_build_index).name,o.seal_cases(o.nominal_seal_index).name);
+fprintf(fid,'Component and seal assumptions are exported separately; see TELESCOPING_TRADE.md for research sources and qualifications.\n');
+fprintf(fid,'Adaptive speed evaluations retain the same airframe, dry mass and installed power; out-of-screen points are explicitly flagged.\n');
+fprintf(fid,'Battery-out power enforced: %d; clean-stall enforced: %d; landing enforced: %d; PPL mission enforced: %d\n', ...
+    o.enforce_battery_out,s.inputs.enforce_VS1,s.inputs.enforce_land,s.inputs.enforce_ppl_xc);
+fprintf(fid,'Inherited power model assigns ratings by disk area. Failure screens do not establish cruise bank energy access.\n');
+fprintf(fid,'Lap-joint strength terms are preliminary; no validated stiffness/buckling/torsion/jam/flutter or nesting-clearance design.\n');
+fprintf(fid,'Failed cases stay in CSVs with status. MTOW plots omit failed points; range plots mark finite single-trip capacity failing another screen with x.\n');
+fprintf(fid,'Fixed-MTOW AvailableBattery/Pack/Usable fields are actual budgets; Battery/Pack/Usable fields are required for all enforced missions.\n');
+fprintf(fid,'LandingCheckPass is reported separately even when landing enforcement is disabled.\n');
+end

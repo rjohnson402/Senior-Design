@@ -1,0 +1,58 @@
+function p = AEGAreadpanelpolar(path)
+% Read the teammate's summary, preserving its CLwtot/CDtot pairing.
+% The adjacent VSPAERO iteration histories are NOT additional polar points.
+if nargin<1
+    path=fullfile(fileparts(mfilename('fullpath')),'data','aerodynamics','Panel_drag_polar.csv');
+end
+lines=splitlines(string(fileread(path))); header=0; first=0;
+for j=1:numel(lines)
+    cells=split(lines(j),',');
+    k=find(cells=="Alpha",1);
+    if ~isempty(k) && numel(cells)>=k+7 && cells(k+1)=="Cd0" && cells(k+6)=="Clwtot"
+        header=j; first=k; break
+    end
+end
+assert(header>0,'AEGAreadpanelpolar:header','Summary polar header not found.');
+data=zeros(0,8);
+for j=header+1:numel(lines)
+    cells=split(lines(j),',');
+    if numel(cells)<first+7, break; end
+    v=str2double(cells(first:first+7))';
+    if any(~isfinite(v)), break; end
+    data(end+1,:)=v; %#ok<AGROW>
+end
+assert(size(data,1)>=3 && all(diff(data(:,1))>0),'AEGAreadpanelpolar:points','Need ordered summary points.');
+assert(max(abs(data(:,5)-data(:,2)-data(:,4)))<1e-8, ...
+    'AEGAreadpanelpolar:drag','Summary CDtot must equal Cd0 + Cdiw.');
+% Printed L/D contains a little more precision than printed CL and CD.
+assert(max(abs(data(:,8)-data(:,7)./data(:,5)))<.02, ...
+    'AEGAreadpanelpolar:pairing','Summary L/D does not use CLwtot / CDtot.');
+X=[ones(size(data,1),1) data(:,7).^2]; coefficients=X\data(:,5);
+assert(all(coefficients>0),'AEGAreadpanelpolar:fit','Invalid parabolic fit.');
+p=struct('source',path,'Sref_ft2',metadata(lines,'FC_Sref_'), ...
+    'Bref_ft',metadata(lines,'FC_Bref_'),'Cref_ft',metadata(lines,'FC_Cref_'), ...
+    'Mach',metadata(lines,'FC_Mach_'),'ReCref',metadata(lines,'FC_ReCref_'), ...
+    'Vinf_source_units',metadata(lines,'FC_Vinf_'), ...
+    'summary_CD0',mean(data(:,2)),'CD0_fit',coefficients(1),'k_fit',coefficients(2));
+p.AR_ref=p.Bref_ft^2/p.Sref_ft2;
+p.e_effective=1/(pi*p.AR_ref*p.k_fit);
+p.CL_range=[min(data(:,7)) max(data(:,7))];
+p.alpha_range_deg=[min(data(:,1)) max(data(:,1))];
+p.fit_R2=1-sum((data(:,5)-X*coefficients).^2)/sum((data(:,5)-mean(data(:,5))).^2);
+p.max_abs_CD_residual=max(abs(data(:,5)-X*coefficients));
+p.table=array2table(data,'VariableNames',{'Alpha_deg','CD0_summary','CDi_panel', ...
+    'CDi_wake','CD_total_summary','CL_panel','CL_wake','LD_summary'});
+p.scope='Provisional whole-aircraft clean polar; component coverage, trim and solver convergence unconfirmed';
+end
+
+function value=metadata(lines,key)
+rows=find(startsWith(lines,string(key)+","));
+assert(~isempty(rows),'AEGAreadpanelpolar:metadata','Missing %s.',key);
+values=zeros(size(rows));
+for j=1:numel(rows)
+    cells=split(lines(rows(j)),','); values(j)=str2double(cells(2));
+end
+assert(all(isfinite(values)) && max(values)-min(values)<1e-10, ...
+    'AEGAreadpanelpolar:reference','Reference %s changes across cases.',key);
+value=values(1);
+end

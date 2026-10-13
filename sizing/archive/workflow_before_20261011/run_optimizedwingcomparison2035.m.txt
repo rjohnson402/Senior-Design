@@ -1,0 +1,23 @@
+% Run in MATLAB: run_optimizedwingcomparison2035
+% Independently optimize one fixed geometry and an AR18 adaptive wing.
+msn = AEGAinputs();
+cfg = AEGAstudysettings2035(msn);
+opt = struct();
+opt.profiles = AEGAwingcomparisonprofiles(msn);
+% opt.profiles = opt.profiles(1); % current-input speed and range only
+% Mixed example: 50 nm at 100 knots + remaining route at 160; input reserve speed.
+opt.extended_AR = 18;
+opt.WS_bounds = [min(cfg.WS) max(cfg.WS)]; opt.WS_grid = unique([12:4:48 msn.WS_design]);
+opt.fixed_AR_bounds = [8 cfg.AR_max]; opt.fixed_AR_grid = cfg.AR;
+opt.taper_bounds = cfg.taper_bounds; opt.taper_grid = cfg.taper_grid;
+opt.retraction_bounds = cfg.retraction_bounds; % actual stroke is lift/packing/nesting limited
+opt.retraction_grid = .20:.05:.45; % used only with the manual retraction policy
+opt.enforce_landing = cfg.enforce_landing;
+opt.refine = true; opt.refine_seeds = 3; opt.refine_max_evals = 140;
+opt.cruise_stall_speed_factor = 1.2; % same clean-stall operating margin for both
+opt.size_options = struct('weight_tolerance',.01);
+opt.doplot = true; opt.save_plots = true;
+opt.output_dir = fullfile(fileparts(mfilename('fullpath')),'trade_results', ...
+    ['optimized_wings_' char(datetime('now','Format','yyyyMMdd_HHmmss_SSS'))]);
+optimizedWings2035 = AEGAoptimizewings2035(msn,opt);
+fprintf('Saved optimized wing comparison to:\n%s\n',opt.output_dir);

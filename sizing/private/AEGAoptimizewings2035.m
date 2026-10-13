@@ -1,0 +1,517 @@
+function study = AEGAoptimizewings2035(msn,opt)
+% Compare independently optimized FIXED and TELESCOPING wings on shared missions.
+% Objective: minimum closed MTOW. Both use common 2035 technology / propulsion.
+% Fixed variables [WS AR taper]; adaptive [WS taper], with derived stroke.
+% Coarse global coverage + multiple bounded local searches; no global optimum claim.
+if nargin<1 || isempty(msn), msn = AEGAinputs(); end
+if nargin<2, opt = struct(); end
+if isfield(opt,'replot_data')
+    study=opt.replot_data; study.figures=gobjects(0);
+    study=AEGAoptimizedwingoutputs2035(study);
+    if study.options.doplot, study.figures=make_plots(study); end
+    return
+end
+[builds,seals] = AEGAtelescopingassumptions2035();
+source_inputs=msn; cfg=AEGAstudysettings2035(msn); technology=cfg.technology;
+d = struct('profiles',AEGAwingcomparisonprofiles(msn),'extended_AR',18, ...
+    'WS_bounds',[min(cfg.WS) max(cfg.WS)],'fixed_AR_bounds',[8 18],'taper_bounds',cfg.taper_bounds, ...
+    'retraction_bounds',cfg.retraction_bounds,'retraction_policy','lift-drag', ...
+    'coupled_flight_phases',true,'phase_energy_margin',.02,'WS_grid',unique([12:4:48 msn.WS_design]), ...
+    'fixed_AR_grid',cfg.AR,'taper_grid',cfg.taper_grid, ...
+    'retraction_grid',.20:.05:.45, ...
+    'technology',technology,'mechanism_build',builds(3),'joint_seal',seals(1), ...
+    'high_lift_diameter_ft',cfg.high_lift_diameter_ft,'cruise_diameter_ft',cfg.cruise_diameter_ft, ...
+    'anchor_high_lift_diameter_ft',cfg.anchor_high_lift_diameter_ft,'prop_gap_ft',cfg.prop_gap_ft, ...
+    'enforce_landing',cfg.enforce_landing, ...
+    'enforce_battery_out',true,'cruise_stall_speed_factor',1.2, ...
+    'size_options',struct('weight_tolerance',.01), ...
+    'refine',true,'refine_seeds',2,'refine_max_evals',100,'polish_passes',2, ...
+    'final_WS_refine',true,'final_WS_max_evals',20, ...
+    'speed_grid',unique([80:5:200 msn.Vkt]),'doplot',true,'save_plots',false, ...
+    'figure_visible','on','output_dir','');
+for n = fieldnames(d).'
+    if ~isfield(opt,n{1}), opt.(n{1}) = d.(n{1}); end
+end
+for n = {'WS_bounds','fixed_AR_bounds','taper_bounds','retraction_bounds'}
+    validateattributes(opt.(n{1}),{'numeric'},{'vector','numel',2,'finite','positive','increasing'});
+end
+assert(opt.extended_AR==18,'The adaptive wing must be AR18 at full extension.');
+assert(opt.retraction_bounds(2)<1 && opt.taper_bounds(2)<=1);
+assert(~isempty(opt.profiles));
+validateattributes(opt.polish_passes,{'numeric'},{'scalar','integer','nonnegative','<=',10});
+validateattributes(opt.final_WS_max_evals,{'numeric'},{'scalar','integer','>=',5});
+validateattributes(opt.cruise_stall_speed_factor,{'numeric'},{'scalar','finite','>=',1});
+assert(~opt.save_plots || ~opt.doplot || ~isempty(opt.output_dir));
+msn.whkg = opt.technology.pack_Whkg; msn.fusable = opt.technology.usable_fraction;
+msn.kWkg_m = opt.technology.motor_kWkg; msn.kWkg_pe = opt.technology.inverter_kWkg;
+msn.eta_m = opt.technology.motor_efficiency; msn.eta_pe = opt.technology.inverter_efficiency;
+msn.enforce_land=opt.enforce_landing;
+assert(opt.anchor_high_lift_diameter_ft>=opt.high_lift_diameter_ft);
+oldOrder = get(groot,'defaultAxesColorOrder');
+graphicsGuard = onCleanup(@() set(groot,'defaultAxesColorOrder',oldOrder));
+cache = containers.Map('KeyType','char','ValueType','any');
+rows = repmat(blank_row(),0,1); count = 0;
+best_rows = repmat(blank_row(),0,1); best_details = {};
+for ip = 1:numel(opt.profiles)
+    for family = ["Fixed" "Adaptive"]
+        first = numel(rows)+1;
+        fprintf('\nOptimizing %s wing: %s\n',family,opt.profiles(ip).name);
+        if family=="Fixed"
+            lo = [opt.WS_bounds(1) opt.fixed_AR_bounds(1) opt.taper_bounds(1)];
+            hi = [opt.WS_bounds(2) opt.fixed_AR_bounds(2) opt.taper_bounds(2)];
+            grids = {opt.WS_grid opt.fixed_AR_grid opt.taper_grid};
+        else
+            lo = [opt.WS_bounds(1) opt.taper_bounds(1)];
+            hi = [opt.WS_bounds(2) opt.taper_bounds(2)];
+            grids = {opt.WS_grid opt.taper_grid};
+            if strcmp(opt.retraction_policy,'manual')
+                lo(end+1)=opt.retraction_bounds(1); hi(end+1)=opt.retraction_bounds(2); %#ok<AGROW>
+                grids{end+1}=opt.retraction_grid; %#ok<AGROW>
+            end
+        end
+        for j = 1:numel(grids)
+            grids{j} = unique([lo(j) grids{j}(grids{j}>=lo(j) & grids{j}<=hi(j)) hi(j)]);
+        end
+        combinations=cell(1,numel(grids)); [combinations{:}]=ndgrid(grids{:});
+        for j=1:numel(combinations{1})
+            x=cellfun(@(a) a(j),combinations); run_case(ip,family,x,"coarse");
+        end
+        subset = rows(first:end); good = [subset.PassesScreen];
+        if ~any(good)
+            warning('AEGAoptimizewings2035:noFeasible','No feasible %s case for %s.',family,opt.profiles(ip).name);
+            b = blank_row(); b.Profile = opt.profiles(ip).name; b.Family = family;
+            b.Status = "no feasible design within search bounds";
+            best_rows(end+1,1) = b; best_details{end+1} = struct(); %#ok<AGROW>
+            continue
+        end
+        passing = subset(good); [~,rank] = sort([passing.MTOW_lb]);
+        if opt.refine
+            fprintf('Coarse best %.1f lb; refining up to %d seeds.\n',passing(rank(1)).MTOW_lb,opt.refine_seeds);
+            settings = optimset('Display','off','TolX',.002,'TolFun',.04, ...
+                'MaxFunEvals',opt.refine_max_evals,'MaxIter',80);
+            for seed = 1:min(opt.refine_seeds,numel(rank))
+                b = passing(rank(seed));
+                if family=="Fixed", x = [b.WS_lb_ft2 b.AR_extended b.Taper];
+                else
+                    x = [b.WS_lb_ft2 b.Taper];
+                    if strcmp(opt.retraction_policy,'manual'), x(end+1)=b.RetractFraction; end %#ok<AGROW>
+                end
+                fminsearch(@(u) objective(u,lo,hi,ip,family),(x-lo)./(hi-lo),settings);
+            end
+            % Simplex refinement can spend its budget outside active bounds.
+            % Finish with feasible coordinate checks, explicitly testing AR
+            % and taper faces so a boundary optimum is not silently missed.
+            for pass=1:opt.polish_passes
+                for dim=1:numel(lo)
+                    subset=rows(first:end); good=subset([subset.PassesScreen]);
+                    [~,ib]=min([good.MTOW_lb]); b=good(ib);
+                    if family=="Fixed", x=[b.WS_lb_ft2 b.AR_extended b.Taper]; step=[1 .5 .025];
+                    else
+                        x=[b.WS_lb_ft2 b.Taper]; step=[1 .025];
+                        if strcmp(opt.retraction_policy,'manual')
+                            x(end+1)=b.RetractFraction; step(end+1)=.025; %#ok<AGROW>
+                        end
+                    end
+                    delta=step(dim)/2^(pass-1);
+                    values=max(lo(dim),min(hi(dim),x(dim)+[-delta delta]));
+                    if pass==1 && dim>1, values=[values lo(dim) hi(dim)]; end %#ok<AGROW>
+                    for value=unique(values)
+                        y=x; y(dim)=value; run_case(ip,family,y,"coordinate polishing");
+                    end
+                end
+            end
+            % Re-optimize W/S after an AR/taper face changes the best shape.
+            % This costs one short scalar search instead of another full
+            % multi-variable simplex, and avoids returning a nearby heavier point.
+            if opt.final_WS_refine
+                subset=rows(first:end); good=subset([subset.PassesScreen]);
+                [~,ib]=min([good.MTOW_lb]); b=good(ib);
+                if family=="Fixed", x=[b.WS_lb_ft2 b.AR_extended b.Taper];
+                else
+                    x=[b.WS_lb_ft2 b.Taper];
+                    if strcmp(opt.retraction_policy,'manual'), x(end+1)=b.RetractFraction; end %#ok<AGROW>
+                end
+                left=max(lo(1),x(1)-2); right=min(hi(1),x(1)+2);
+                if left<right
+                    fminbnd(@(ws) line_objective(ws,ip,family,x),left,right, ...
+                        optimset('Display','off','TolX',.02,'MaxFunEvals',opt.final_WS_max_evals));
+                end
+            end
+        end
+        subset = rows(first:end); passing = subset([subset.PassesScreen]);
+        [~,ib] = min([passing.MTOW_lb]); b = passing(ib);
+        if family=="Fixed", x = [b.WS_lb_ft2 b.AR_extended b.Taper];
+        else
+            x = [b.WS_lb_ft2 b.Taper];
+            if strcmp(opt.retraction_policy,'manual'), x(end+1)=b.RetractFraction; end %#ok<AGROW>
+        end
+        [~,out] = run_case(ip,family,x,"selected");
+        near = abs((x-lo)./(hi-lo))<.005 | abs((hi-x)./(hi-lo))<.005;
+        b.AtSearchBoundary = any(near);
+        if family=="Fixed", variables=["W/S" "AR" "taper"];
+        else, variables=["W/S" "taper"];
+            if strcmp(opt.retraction_policy,'manual'), variables(end+1)="retraction"; end %#ok<AGROW>
+        end
+        b.BoundaryVariables=strjoin(variables(near),", ");
+        best_rows(end+1,1) = b; best_details{end+1} = out; %#ok<AGROW>
+        fprintf('Selected %s: %.2f lb; W/S %.3f, AR %.3f, taper %.3f, retraction %.3f.\n', ...
+            family,b.MTOW_lb,b.WS_lb_ft2,b.AR_extended,b.Taper,b.RetractFraction);
+    end
+end
+study.inputs = msn; study.options = opt;
+study.source_inputs=source_inputs;
+study.evaluated_designs = struct2table(rows);
+study.best = struct2table(best_rows); study.best_details = best_details;
+study.best.DeltaMTOW_vs_fixed_lb = nan(height(study.best),1);
+study.best.DeltaMTOW_vs_fixed_percent = nan(height(study.best),1);
+for ip = 1:numel(opt.profiles)
+    match = study.best.Profile==opt.profiles(ip).name;
+    base = study.best.MTOW_lb(match & study.best.Family=="Fixed");
+    study.best.DeltaMTOW_vs_fixed_lb(match) = study.best.MTOW_lb(match)-base;
+    study.best.DeltaMTOW_vs_fixed_percent(match) = 100*(study.best.MTOW_lb(match)/base-1);
+end
+study.selected_phases = selected_phases(study);
+study.selected_speed_sweep = speed_sweep(study);
+study.operating_phases = operating_phases(study);
+study.best_with_landing_check = landing_candidates(study.evaluated_designs,opt.profiles);
+study.provenance = struct('executed_at',char(datetime('now')),'MATLAB_version',version, ...
+    'method','Coarse coverage, bounded simplex refinement and coordinate polishing', ...
+    'objective','minimum converged MTOW for identical mission and payload', ...
+    'scope','best found within stated bounds; conceptual sizing and joint estimates');
+study=AEGAoptimizedwingoutputs2035(study);
+study.figures = gobjects(0);
+if ~isempty(opt.output_dir)
+    AEGAtradeassumptions2035(study);
+    if ~isfolder(opt.output_dir), mkdir(opt.output_dir); end
+    writetable(study.evaluated_designs,fullfile(opt.output_dir,'01_evaluated_designs.csv'));
+    writetable(study.best,fullfile(opt.output_dir,'02_best_designs.csv'));
+    writetable(study.selected_phases,fullfile(opt.output_dir,'03_selected_mission_phases.csv'));
+    writetable(study.selected_speed_sweep,fullfile(opt.output_dir,'04_selected_speed_sweep.csv'));
+    writetable(study.best_with_landing_check,fullfile(opt.output_dir,'07_best_sampled_with_landing_check.csv'));
+    if ~isempty(study.operating_phases)
+        writetable(study.operating_phases,fullfile(opt.output_dir,'08_all_flight_phases.csv'));
+    end
+    % Preserve the complete numerical study before optional graphics export.
+    saved = rmfield(study,'figures');
+    save(fullfile(opt.output_dir,'optimized_wing_comparison.mat'),'saved');
+    write_notes(study);
+end
+if opt.doplot, study.figures = make_plots(study); end
+disp(study.best(:,{'Profile','Family','MTOW_lb','DeltaMTOW_vs_fixed_percent', ...
+    'WS_lb_ft2','AR_extended','Taper','RetractFraction','Mechanism_lb','PassesScreen'}));
+fprintf('Optimized geometry (capability and actual cruise retraction are separate):\n');
+disp(study.optimized_wings(:,{'Family','MTOW_lb','WS_lb_ft2','AR_extended','Taper', ...
+    'AreaExtended_ft2','SpanExtended_ft','CruiseSpan_ft','ActualCruiseRetraction_percent'}));
+
+    function cost = objective(u,lo,hi,ip,family)
+        if any(u<0 | u>1)
+            cost = 1e6+1e5*sum((u-max(0,min(1,u))).^2); return
+        end
+        [row,~] = run_case(ip,family,lo+u.*(hi-lo),"refinement");
+        if row.PassesScreen, cost = row.MTOW_lb; else, cost = 1e6; end
+    end
+
+    function cost=line_objective(ws,ip,family,x)
+        x(1)=ws; row=run_case(ip,family,x,"final W/S refinement");
+        if row.PassesScreen, cost=row.MTOW_lb; else, cost=1e6; end
+    end
+
+    function [row,out] = run_case(ip,family,x,stage)
+        key = sprintf('%d_%s_%s',ip,family,sprintf('%.8f_',x));
+        if isKey(cache,key)
+            entry = cache(key); row = entry.row; out = entry.out; return
+        end
+        p = opt.profiles(ip); m = msn; m.range = sum(p.route_distance_nm);
+        m.Vkt = max([p.route_speed_ktas(:).' p.reserve_speed_ktas]);
+        ws = x(1); r = 0;
+        if family=="Fixed", m.AR = x(2); m.TR = x(3);
+        else
+            m.AR = opt.extended_AR; m.TR = x(2); r = opt.retraction_bounds(1);
+            if strcmp(opt.retraction_policy,'manual'), r=x(3); end
+        end
+        m.prop_D_side_ft = [repmat(opt.high_lift_diameter_ft,1,3) opt.cruise_diameter_ft];
+        anchor=opt.anchor_high_lift_diameter_ft;
+        inner = m.WFus/2+anchor/2+opt.prop_gap_ft;
+        m.prop_high_lift_y_side_ft = inner+(0:2)*(anchor+opt.prop_gap_ft);
+        m.prop_y_fraction_side = [.2 .4 .6 1-r];
+        o = opt.size_options;
+        min_core_semi = m.prop_high_lift_y_side_ft(end)+ ...
+            (opt.high_lift_diameter_ft+opt.cruise_diameter_ft)/2+opt.prop_gap_ft;
+        min_weight_fit = (2*min_core_semi/(1-r))^2*ws/m.AR;
+        o.initial_MTOW = max(3200,1.03*min_weight_fit);
+        o.enforce_battery_out = opt.enforce_battery_out;
+        o.retract_fraction = r; o.cruise_disk_indices = [4 8];
+        o.wing_mass_factor = opt.technology.wing_mass_factor;
+        o.mission_profile = p; o.cruise_deployment = 1;
+        o.cruise_CL_limit = m.CLmax_clean/opt.cruise_stall_speed_factor^2;
+        o.cruise_stall_speed_factor=opt.cruise_stall_speed_factor;
+        o.coupled_flight_phases=opt.coupled_flight_phases;
+        o.phase_energy_margin=opt.phase_energy_margin;
+        if family=="Adaptive"
+            o.cruise_deployment = 'optimal'; o.mechanism_build = opt.mechanism_build;
+            o.joint_seal = opt.joint_seal;
+            o.retraction_policy=opt.retraction_policy;
+            o.retraction_bounds=opt.retraction_bounds; o.prop_gap_ft=opt.prop_gap_ft;
+        end
+        count = count+1; row = blank_row(); row.CaseID = count;
+        row.Profile = p.name; row.Family = family; row.Stage = stage;
+        row.WS_lb_ft2 = ws; row.AR_extended = m.AR; row.Taper = m.TR;
+        row.RetractFraction = r; row.Range_nm = m.range; row.Reserve_min = m.reserve;
+        row.PeakMissionSpeed_ktas = m.Vkt;
+        try
+            out = AEGAsize(m,ws,o);
+            row.RetractFraction=out.options.retract_fraction;
+            row.MTOW_lb = out.MTOW; row.WingAreaExtended_ft2 = out.SW;
+            row.SpanExtended_ft = out.span; row.SpanRetracted_ft = out.cruise_geometry.retracted_span;
+            row.AR_retracted = out.cruise_geometry.retracted_AR;
+            row.Wing_lb = out.W.wing; row.Mechanism_lb = out.W.telescoping;
+            row.Battery_lb = out.W.battery; row.Pack_kWh = out.pack_kWh;
+            row.ProjectUsable_kWh = out.mission.E_range; row.RequiredUsable_kWh = out.Ebat;
+            row.InstalledShaft_kW = out.PTO_kW;
+            row.CruiseMotorEach_kW = out.PTO_kW*out.cruise_rating_fraction/2;
+            row.DesignSpeedDeployment = out.cruise_geometry.deployment;
+            row.DesignSpeedPower_kW = out.Pcruise_kW;
+            row.MinCruiseStallSpeedFactor = min([out.cruise_phases.stall_speed_margin]);
+            row.CleanStallExtended_kt = out.VS1; row.Landing_ft = out.con.S_land_ft;
+            row.LandingCheckPass = out.con.landing_ok;
+            row.WeightResidual_lb = out.weight_residual_lb;
+            row.Converged = out.converged; row.PassesScreen = out.feasible;
+            if ~isempty(out.operating_phases)
+                a=out.operating_phases; selected=a.RequiredForSizing;
+                row.PhaseSchedulePass=all(a.LiftPass(selected) & a.PowerPass(selected) & a.ThrustBalancePass(selected));
+                row.ApproachThrottle_percent=a.CruiseThrottle_percent(a.Phase=="Approach");
+            end
+            if ~isempty(fieldnames(out.retraction_limits))
+                h=out.retraction_limits;
+                row.MinCruiseArea_ft2=h.minimum_cruise_area_ft2;
+                row.RetractLiftCeiling=h.lift_fraction_ceiling;
+                row.RetractHardwareCeiling=h.hardware_fraction_ceiling;
+                row.RetractNestingCeiling=h.nesting_fraction_ceiling;
+                row.RetractFeasibleCeiling=h.fraction_ceiling;
+                row.RetractDragOptimum=h.drag_optimum_fraction;
+            end
+            row.MissionDriver = string(out.mission.driver); row.PowerDriver = string(out.power_driver);
+            row.Status = string(out.status);
+        catch err
+            out = struct('error',err.message); row.Status = string(err.identifier)+": "+string(err.message);
+        end
+        rows(end+1,1) = row;
+        cache(key) = struct('row',row,'out',out);
+        if mod(count,50)==0, fprintf('Evaluated %d unique designs.\n',count); end
+    end
+end
+
+function row = blank_row()
+row = struct('CaseID',0,'Profile',"",'Family',"",'Stage',"", ...
+    'WS_lb_ft2',NaN,'AR_extended',NaN,'Taper',NaN,'RetractFraction',NaN, ...
+    'Range_nm',NaN,'Reserve_min',NaN,'PeakMissionSpeed_ktas',NaN, ...
+    'MTOW_lb',NaN,'WingAreaExtended_ft2',NaN,'SpanExtended_ft',NaN,'SpanRetracted_ft',NaN, ...
+    'AR_retracted',NaN,'Wing_lb',NaN,'Mechanism_lb',NaN,'Battery_lb',NaN, ...
+    'Pack_kWh',NaN,'ProjectUsable_kWh',NaN,'RequiredUsable_kWh',NaN, ...
+    'InstalledShaft_kW',NaN,'CruiseMotorEach_kW',NaN,'DesignSpeedDeployment',NaN, ...
+    'DesignSpeedPower_kW',NaN,'MinCruiseStallSpeedFactor',NaN, ...
+    'CleanStallExtended_kt',NaN,'Landing_ft',NaN, ...
+    'LandingCheckPass',false,'WeightResidual_lb',NaN,'Converged',false, ...
+    'PhaseSchedulePass',true,'ApproachThrottle_percent',NaN,'MinCruiseArea_ft2',NaN, ...
+    'RetractLiftCeiling',NaN,'RetractHardwareCeiling',NaN,'RetractNestingCeiling',NaN, ...
+    'RetractFeasibleCeiling',NaN,'RetractDragOptimum',NaN, ...
+    'PassesScreen',false,'AtSearchBoundary',false,'BoundaryVariables',"", ...
+    'MissionDriver',"",'PowerDriver',"",'Status',"");
+end
+
+function t = selected_phases(s)
+rows = [];
+for j = 1:height(s.best)
+    if ~s.best.PassesScreen(j), continue; end
+    out = s.best_details{j};
+    for k = 1:numel(out.cruise_phases)
+        a = out.cruise_phases(k);
+        row = struct('Profile',s.best.Profile(j),'Family',s.best.Family(j), ...
+            'Phase',a.phase,'Speed_ktas',a.speed_ktas,'Distance_nm',a.distance_nm, ...
+            'Duration_hr',a.duration_hr,'Deployment',a.deployment,'Span_ft',a.span_ft, ...
+            'AR',a.AR,'Area_ft2',a.area_ft2,'BatteryPower_kW',a.battery_kW, ...
+            'StallSpeedFactor',a.stall_speed_margin, ...
+            'EnergyWithOverhead_kWh',a.energy_kWh,'ShaftPower_kW',a.shaft_kW, ...
+            'CruiseHubY_ft',out.prop_layout.y_side(end),'CleanLiftPass',a.clean_lift_pass, ...
+            'AssignedCruiseMotorEach_kW',out.PTO_kW*out.cruise_rating_fraction/2, ...
+            'CruiseMotorPowerPass',a.shaft_kW<=out.PTO_kW*out.cruise_rating_fraction+1e-7);
+        rows = [rows; row]; %#ok<AGROW>
+    end
+end
+if isempty(rows), t = table(); else, t = struct2table(rows); end
+end
+
+function t=operating_phases(s)
+t=table();
+for j=1:height(s.best)
+    if ~s.best.PassesScreen(j), continue; end
+    a=s.best_details{j}.operating_phases;
+    if isempty(a), continue; end
+    a=addvars(a,repmat(s.best.Profile(j),height(a),1), ...
+        repmat(s.best.Family(j),height(a),1),'Before',1,'NewVariableNames',{'Profile','Family'});
+    t=[t; a]; %#ok<AGROW>
+end
+end
+
+function t = landing_candidates(all_cases,profiles)
+% Additional transparency when landing enforcement is disabled. These are
+% the best examined passing points, not separate local optimizations.
+t = all_cases([],:);
+for p = 1:numel(profiles)
+    for family = ["Fixed" "Adaptive"]
+        a = all_cases(all_cases.Profile==profiles(p).name & all_cases.Family==family & ...
+            all_cases.PassesScreen & all_cases.LandingCheckPass,:);
+        if isempty(a), continue; end
+        [~,j] = min(a.MTOW_lb); t = [t; a(j,:)]; %#ok<AGROW>
+    end
+end
+end
+
+function t = speed_sweep(s)
+rows = [];
+for j = 1:height(s.best)
+    if ~s.best.PassesScreen(j), continue; end
+    out = s.best_details{j};
+    for v = s.options.speed_grid
+        m = out.msn; m.Vkt = v;
+        g = AEGAtelescopingcruise(m,out.MTOW,out.SW,out.span,out.base_drag_area_ft2,out.options);
+        V = v*1.688; q = .5*m.rho_cr*V^2;
+        eta = 2/(1+sqrt(1+g.drag/(q*out.cruise_Adisc)))*m.prof;
+        if g.wingtip_prop.enabled, eta=g.wingtip_prop.eta_prop; end
+        shaft = g.drag*V/(737.56*eta);
+        row = struct('Profile',s.best.Profile(j),'Family',s.best.Family(j), ...
+            'Speed_ktas',v,'Span_ft',g.span,'AR',g.AR,'Deployment',g.deployment, ...
+            'ActualRetractionFraction',g.actual_retraction_fraction,'Area_ft2',g.area, ...
+            'MinimumLiftArea_ft2',g.minimum_lift_area_ft2, ...
+            'Drag_lb',g.drag,'ParasiteDrag_lb',g.parasite_drag_lb,'InducedDrag_lb',g.induced_drag_lb, ...
+            'DragChangeFromFullSpan_percent',g.drag_change_percent, ...
+            'BatteryPower_kW',shaft/(m.eta_m*m.eta_pe), ...
+            'WithinBasicScreen',g.CL<=out.options.cruise_CL_limit && ...
+            shaft<=out.PTO_kW*out.cruise_rating_fraction+1e-7 && v<=out.msn.Vkt+out.msn.dV_ne);
+        rows = [rows; row]; %#ok<AGROW>
+    end
+end
+if isempty(rows), t = table(); else, t = struct2table(rows); end
+end
+
+function figures = make_plots(s)
+o = s.options; profiles = unique(s.best.Profile,'stable'); n = numel(profiles);
+colors = [0 .447 .741; .85 .325 .098]; figures = gobjects(2,1);
+figures(1) = figure('Name','Optimized fixed versus adaptive wing', ...
+    'Color','w','Visible',o.figure_visible,'Position',[80 80 1150 max(470,330*n)]);
+t = tiledlayout(figures(1),n,2,'TileSpacing','compact','Padding','compact');
+title(t,AEGAtradetitle2035('Fixed and Variable-Span Wing Mass Comparison',s.inputs, ...
+    'Fixed: W/S, AR, taper optimized | variable: W/S, taper optimized; full-extension AR 18'),'FontSize',12);
+for ip = 1:n
+    ax = nexttile(t); hold(ax,'on'); grid(ax,'on');
+    for jf = 1:2
+        family = ["Fixed" "Adaptive"]; family = family(jf);
+        a = s.evaluated_designs(s.evaluated_designs.Profile==profiles(ip) & ...
+            s.evaluated_designs.Family==family & s.evaluated_designs.Stage=="coarse",:);
+        ws = unique(a.WS_lb_ft2); y = nan(size(ws));
+        for k = 1:numel(ws)
+            z = a.MTOW_lb(a.WS_lb_ft2==ws(k) & a.PassesScreen);
+            if ~isempty(z), y(k) = min(z); end
+        end
+        plot(ax,ws,y,'-o','Color',colors(jf,:),'LineWidth',1.6,'DisplayName',family);
+        b = s.best(s.best.Profile==profiles(ip) & s.best.Family==family,:);
+        plot(ax,b.WS_lb_ft2,b.MTOW_lb,'p','Color',colors(jf,:),'MarkerFaceColor',colors(jf,:), ...
+            'MarkerSize',13,'HandleVisibility','off');
+    end
+    xlabel(ax,'Fully extended wing loading (lb/ft^2)'); ylabel(ax,'Sized MTOW (lb)');
+    title(ax,profiles(ip)); subtitle(ax,'Sampled feasible envelopes; stars: selected designs');
+    legend(ax,'Location','best');
+    ax = nexttile(t); hold(ax,'on'); grid(ax,'on');
+    b = s.best(s.best.Profile==profiles(ip),:);
+    bars = bar(ax,categorical(b.Family,["Fixed" "Adaptive"]),b.MTOW_lb,'FaceColor','flat');
+    bars.CData = colors;
+    ylabel(ax,'Sized MTOW (lb)'); title(ax,'Selected designs');
+    for j = 1:height(b)
+        text(ax,j,b.MTOW_lb(j),sprintf('%.0f lb\nAR %.2f; W/S %.1f; taper %.2f', ...
+            b.MTOW_lb(j),b.AR_extended(j),b.WS_lb_ft2(j),b.Taper(j)), ...
+            'HorizontalAlignment','center','VerticalAlignment','bottom','FontSize',9);
+    end
+    ylim(ax,[0 1.15*max(b.MTOW_lb)]);
+end
+figures(2) = figure('Name','Selected configurations across speed', ...
+    'Color','w','Visible',o.figure_visible,'Position',[100 100 1150 max(470,330*n)]);
+t = tiledlayout(figures(2),n,2,'TileSpacing','compact','Padding','compact');
+title(t,AEGAtradetitle2035('Cruise Span Adaptation and Power Demand',s.inputs, ...
+    'Selected aircraft at fixed mass and motor ratings | deployment minimizes power within lift limits'),'FontSize',12);
+for ip = 1:n
+    for panel = 1:2
+        ax = nexttile(t); hold(ax,'on'); grid(ax,'on');
+        for jf = 1:2
+            family = ["Fixed" "Adaptive"]; family = family(jf);
+            a = s.selected_speed_sweep(s.selected_speed_sweep.Profile==profiles(ip) & ...
+                s.selected_speed_sweep.Family==family,:);
+            if panel==1, y = a.Span_ft; else, y = a.BatteryPower_kW; end
+            plot(ax,a.Speed_ktas,y,'-','Color',colors(jf,:),'LineWidth',1.8,'DisplayName',family);
+            bad = ~a.WithinBasicScreen;
+            plot(ax,a.Speed_ktas(bad),y(bad),'x','Color',colors(jf,:),'HandleVisibility','off');
+        end
+        xlabel(ax,'Speed (KTAS)'); title(ax,profiles(ip));
+        subtitle(ax,'x = outside cruise lift margin, assigned motor power or model speed screen');
+        if panel==1
+            ylabel(ax,'Selected wingspan (ft)');
+            wings = s.best.SpanExtended_ft(s.best.Profile==profiles(ip));
+            ylim(ax,[.8*min(wings) 1.05*max(wings)]);
+        else
+            ylabel(ax,'Battery power (kW)');
+        end
+        legend(ax,'Location','best');
+    end
+end
+if ~isempty(s.operating_phases), figures(end+1)=AEGAplotflightphases2035(s); end
+figures(end+1)=AEGAplotoptimizedwings2035(s);
+for j = 1:numel(figures)
+    if isprop(figures(j),'Theme'), figures(j).Theme = 'light'; end
+    set(findall(figures(j),'Type','axes'),'Color','w','XColor','k','YColor','k');
+    set(findall(figures(j),'Type','text'),'Color','k');
+    set(findall(figures(j),'Type','legend'),'Color','w','TextColor','k');
+end
+if o.save_plots && ~isempty(o.output_dir)
+    stems = {'05_optimized_comparison','06_selected_span_and_power'};
+    if ~isempty(s.operating_phases), stems{end+1}='09_throttle_and_blown_lift'; end
+    stems{end+1}='10_optimized_wing_geometry';
+    for j = 1:numel(figures)
+        exportgraphics(figures(j),fullfile(o.output_dir,[stems{j} '.png']),'Resolution',180);
+        savefig(figures(j),fullfile(o.output_dir,[stems{j} '.fig']));
+    end
+end
+end
+
+function write_notes(s)
+fid = fopen(fullfile(s.options.output_dir,'RUN_NOTES.txt'),'w');
+assert(fid>=0); guard = onCleanup(@() fclose(fid));
+fprintf(fid,'Executed %s; MATLAB %s\n',s.provenance.executed_at,s.provenance.MATLAB_version);
+fprintf(fid,'Objective: minimum closed MTOW. Independent fixed and adaptive optimization per shared mission.\n');
+fprintf(fid,'Returned selected aircraft: study.fixed and study.adaptive for the first profile; study.optimized_aircraft(ip) for each profile. Geometry, atomic mass breakdown and selection/closure checks are exported separately.\n');
+fprintf(fid,'The AR-only study holds the input taper fixed; this comparison optimizes taper as well. Compare matched geometry before attributing a mass difference to adaptation.\n');
+fprintf(fid,'Fixed wing: W/S [%g,%g], AR [%g,%g], taper [%g,%g].\n', ...
+    s.options.WS_bounds,s.options.fixed_AR_bounds,s.options.taper_bounds);
+fprintf(fid,'Adaptive wing: AR18 extended, W/S [%g,%g], taper [%g,%g], retraction [%g,%g].\n', ...
+    s.options.WS_bounds,s.options.taper_bounds,s.options.retraction_bounds);
+fprintf(fid,'Retraction policy %s. Minimum capability is requested; stroke ceiling comes from cruise lift, fixed prop packing and nesting.\n',s.options.retraction_policy);
+fprintf(fid,'Coupled phase schedule %d. Throttle = shaft power / assigned group rating, not lever angle or RPM.\n',s.options.coupled_flight_phases);
+if s.options.coupled_flight_phases
+    fprintf(fid,'Explicit phase energy replaces blanket 4%% allowance; shared route distance includes climb and arrival. New allowance %.1f%%.\n',100*s.options.phase_energy_margin);
+    fprintf(fid,'Approach lift is evaluated at descent throttle; excess thrust needed for lift fails the stabilized approach screen. Cruise uses clean lift limit.\n');
+end
+fprintf(fid,'Best found within bounds after coarse grid and local refinement; no proven global optimum.\n');
+fprintf(fid,'Takeoff/climb/landing use full extension. Adaptive cruise and reserve optimize deployment at their own speeds.\n');
+fprintf(fid,'Retraction capability is not actual cruise retraction. A deployment of 1 means fully extended, even with nonzero mechanism capability.\n');
+fprintf(fid,'Propulsion group ratings follow the saved input allocation model; cruise, powered-lift and battery-out demands are checked.\n');
+fprintf(fid,'High-lift motor hubs have common physical root stations, with %g ft prop gap; cruise motors stay at each stationary core tip.\n',s.options.prop_gap_ft);
+fprintf(fid,'Same %.0f lb payload, %.0f min reserve, %.0f Wh/kg PACK and wing technology factor %.2f for both.\n', ...
+    s.inputs.payload,s.inputs.reserve,s.inputs.whkg,s.options.technology.wing_mass_factor);
+fprintf(fid,'Route/reserve speed must be at least %.2f times CLEAN stall speed at the phase altitude (analyst operating margin).\n', ...
+    s.options.cruise_stall_speed_factor);
+fprintf(fid,'Full-aircraft parasite area held fixed with phase speed; exposed wing friction and induced drag vary with deployment.\n');
+fprintf(fid,'Executed %d mission profile(s); see options.profiles for route speeds/distances. Reserve speed is explicit.\n',numel(s.options.profiles));
+fprintf(fid,'The three-stop mission remains enforced at each profile peak cruise speed. Project energy cannot hide that battery floor.\n');
+fprintf(fid,'Clean-stall flag inherited; landing study policy explicitly set. Applied flags: %d / %d.\n', ...
+    s.inputs.enforce_VS1,s.inputs.enforce_land);
+fprintf(fid,'Mechanism bill-of-material and joint drag remain optimistic conceptual estimates; see TELESCOPING_TRADE.md.\n');
+fprintf(fid,'Teammate polar interpretation is provisional. No validated trim, aeroelastic/nesting/jam/flutter design, propeller Mach or electrical energy-access model.\n');
+end

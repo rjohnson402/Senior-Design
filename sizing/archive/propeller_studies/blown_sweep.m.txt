@@ -60,7 +60,7 @@ for iN = 1:length(Nprop_vec)
         end
     end
 end
-figure('Name','Trade 1 - Prop Count vs Disk Area at Fixed Power','Color','w')
+figure('Name','Trade 1 - Prop Count vs Disk Area at Fixed Power','Color','k')
 tiledlayout(2,2)
 nexttile
 h = imagesc(Adisc_vec,Nprop_vec,CL1);
@@ -151,22 +151,22 @@ for iR = 1:length(root_tip_vec)
         D_graded_family(iR,:) = D_graded;
     end
 end
-figure('Name','Trade 2 - Diameter Distribution Families','Color','w')
+figure('Name','Trade 2 - Diameter Distribution Families','Color','k')
 tiledlayout(1,3)
 nexttile
-plot(root_tip_vec,CL_equal,'-o',root_tip_vec,CL_two,'-o',root_tip_vec,CL_graded,'-o')
+plot(root_tip_vec,CL_equal,'-r',root_tip_vec,CL_two,'-g',root_tip_vec,CL_graded,'-b')
 xlabel('D_1 / D_4')
 ylabel('Blown Landing C_{L,max}')
 legend('Equal','Two-size','Graded','Location','best')
 grid on
 nexttile
-plot(root_tip_vec,Pblown_equal,'-o',root_tip_vec,Pblown_two,'-o',root_tip_vec,Pblown_graded,'-o')
+plot(root_tip_vec,Pblown_equal,'-r',root_tip_vec,Pblown_two,'-g',root_tip_vec,Pblown_graded,'-b')
 xlabel('D_1 / D_4')
 ylabel('Fraction of Wing Area Blown')
 legend('Equal','Two-size','Graded','Location','best')
 grid on
 nexttile
-plot(root_tip_vec,Moment_equal,'-o',root_tip_vec,Moment_two,'-o',root_tip_vec,Moment_graded,'-o')
+plot(root_tip_vec,Moment_equal,'-r',root_tip_vec,Moment_two,'-g',root_tip_vec,Moment_graded,'-b')
 xlabel('D_1 / D_4')
 ylabel('Normalized Spanwise Thrust Moment')
 legend('Equal','Two-size','Graded','Location','best')
@@ -195,7 +195,7 @@ for iTR = 1:length(TR_vec)
         end
     end
 end
-figure('Name','Trade 3 - Wing Taper vs Inboard Prop Bias','Color','w')
+figure('Name','Trade 3 - Wing Taper vs Inboard Prop Bias','Color','k')
 tiledlayout(1,3)
 nexttile
 h = imagesc(root_tip_taper_vec,TR_vec,dCL3);

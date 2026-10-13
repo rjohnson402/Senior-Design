@@ -1,0 +1,81 @@
+function check_cruiseproptrades2035(study)
+% Quiet constraints, preserved sizing, proper thrust/rating allocation, exports.
+root=AEGAroot();
+if nargin<1
+    m=AEGAinputs(); oldOrder=get(groot,'defaultAxesColorOrder');
+    before=numel(findall(groot,'Type','figure'));
+    printed=evalc('con=AEGAconstraint(m,.025,false,32,2.8,3.1);');
+    assert(isempty(strtrim(printed)) && con.WS_design==32);
+    assert(numel(findall(groot,'Type','figure'))==before);
+    assert(isequal(oldOrder,get(groot,'defaultAxesColorOrder')));
+    baseline=AEGAsize(AEGAlegacyinputs2035(),32,struct());
+    assert(abs(baseline.MTOW-2349.7110165744)<.01,'Original baseline changed.');
+    opt=struct('cruise_diameter_ft',4.5,'high_lift_diameter_ft',[2.2 2.8], ...
+        'WS',24,'refine',false,'doplot',false,'verbose',false, ...
+        'complete_downsize_plot_grid',false, ...
+        'plot_constraints',false,'output_dir',fullfile(root,'trade_results','cruise_prop_validation'));
+    study=AEGAcruiseproptrades2035(m,opt);
+    assert(height(study.cases)==4 && all(study.cases.Converged));
+    assert(numel(findall(groot,'Type','figure'))==before);
+    assert(isequal(oldOrder,get(groot,'defaultAxesColorOrder')));
+    csv=readtable(fullfile(opt.output_dir,'01_all_cases.csv'));
+    assert(height(csv)==4 && max(abs(csv.MTOW_lb-study.cases.MTOW_lb))<1e-8);
+    loaded=load(fullfile(opt.output_dir,'cruise_prop_trade.mat'),'saved');
+    assert(isequaln(loaded.saved.best,study.best));
+end
+assert(~isempty(study.best) && all(study.best.PassesScreen));
+assert(all(study.best.LandingCheckPass | ~study.inputs.enforce_land));
+assert(all(study.best.TakeoffCheckPass & study.best.NormalConstraintPass));
+assert(all(study.best.PhaseSchedulePass));
+% Every diagnostic diameter must have identical W/S coverage. Selective
+% refinement points cannot substitute for this common plotting lattice.
+if isfield(study,'downsize_plot_cases') && ~isempty(study.downsize_plot_cases)
+    plotCases=study.downsize_plot_cases;
+    for failure=unique(plotCases.BatteryOutEnforced).'
+        for dc=study.options.downsize_plot_cruise_ft
+            for dh=study.options.downsize_plot_diameter_ft
+                a=plotCases(plotCases.BatteryOutEnforced==failure & ...
+                    abs(plotCases.CruiseDiameter_ft-dc)<1e-8 & ...
+                    abs(plotCases.HighLiftDiameter_ft-dh)<1e-8,:);
+                assert(isequal(sort(a.WS_lb_ft2).',sort(study.options.WS)));
+            end
+        end
+    end
+end
+assert(all(study.best.BatteryOutPowerPass | ~study.best.BatteryOutEnforced));
+for j=1:height(study.best)
+    row=study.best(j,:); out=study.best_details{j}; m=out.msn;
+    assert(abs(out.weight_residual_lb)<out.options.weight_tolerance);
+    assert(abs(out.MTOW-out.SW*row.WS_lb_ft2)<1e-8);
+    assert(abs(out.span^2/out.SW-study.inputs.AR)<1e-8);
+    assert(max(abs(out.prop_layout.D_side-[repmat(row.HighLiftDiameter_ft,1,3) row.CruiseDiameter_ft]))<1e-8);
+    assert(max(abs(out.prop_layout.y_side(1:3)-m.prop_high_lift_y_side_ft))<1e-8);
+    assert(abs(out.prop_layout.y_side(4)-out.span/2)<1e-8);
+    expected=row.CruiseDiameter_ft^2/(3*row.HighLiftDiameter_ft^2+row.CruiseDiameter_ft^2);
+    if strcmp(out.power_groups.mode,'cruise-residual')
+        expected=out.power_groups.cruise_pair_kW/out.PTO_kW;
+        assert(abs(row.CruisePairRating_kW-out.power_groups.cruise_pair_kW)<1e-8);
+        assert(abs(row.HighLiftGroupRating_kW-out.power_groups.high_lift_total_kW)<1e-8);
+    end
+    assert(abs(out.cruise_rating_fraction-expected)<1e-10);
+    assert(max(abs(out.eo.retained_power_fraction-out.eo.alive*out.eo.rating_share(:)))<1e-10);
+    assert(abs(6*row.HighLiftMotorEach_kW+2*row.CruiseMotorEach_kW-row.InstalledShaft_kW)<1e-8);
+    assert(abs(row.HighLiftTakeoffThrust_lb+row.CruiseTakeoffThrust_lb-row.TakeoffThrust_lb)<1e-8);
+    assert(out.PTO_kW>=out.Pcruise_shaft_kW/expected-1e-7);
+    a=out.operating_phases; selected=a.RequiredForSizing;
+    assert(all(a.LiftPass(selected) & a.PowerPass(selected) & a.ThrustBalancePass(selected)));
+    cruise=startsWith(a.Phase,"Route leg ") | a.Phase=="Reserve";
+    assert(all(a.HighLiftThrottle_percent(cruise)==0));
+    assert(abs(sum(a.EnergyWithAllowance_kWh)-out.mission.E_range)<1e-8);
+    assert(abs(out.mission.project_route_nm-m.range)<1e-8);
+    assert(abs(out.Ebat-max(out.mission.E_range,out.mission.E_ppl_xc))<1e-8);
+    candidates=study.cases(study.cases.Mode==row.Mode & ...
+        study.cases.CruiseDiameter_ft==row.CruiseDiameter_ft & study.cases.PassesScreen,:);
+    if row.Selection=="Minimum sampled MTOW"
+        assert(abs(row.MTOW_lb-min(candidates.MTOW_lb))<1e-8);
+    else
+        assert(abs(row.HighLiftDiameter_ft-min(candidates.HighLiftDiameter_ft))<1e-8);
+    end
+end
+fprintf('PASS: quiet normal constraints; unchanged baseline; matched MTOW/mission; prop geometry; disk/rating/thrust shares; bank failures; phase and energy checks.\n');
+end

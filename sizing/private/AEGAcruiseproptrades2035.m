@@ -1,0 +1,489 @@
+function study = AEGAcruiseproptrades2035(msn,opt)
+% Two outer cruise props; six equal high-lift props shrink subject to screens.
+% Cruise rating covers the cruise mission; high-lift rating closes residual
+% thrust, blown lift, field correlations and mirrored battery failures.
+% Each sample closes MTOW and calls AEGAconstraint(...,false,...).
+if nargin<1 || isempty(msn), msn=AEGAinputs(); end
+if nargin<2, opt=struct(); end
+if isfield(opt,'replot_data')
+    study=opt.replot_data; study.figure_handles=gobjects(0);
+    if ~isfield(study,'downsize_plot_cases'), study.downsize_plot_cases=table(); end
+    if ~isfield(study.options,'downsize_plot_cruise_ft')
+        study.options.downsize_plot_cruise_ft=study.options.cruise_diameter_ft;
+    end
+    if study.options.doplot, study.figure_handles=draw_summary(study); end
+    return
+end
+source_inputs=msn; cfg=AEGAstudysettings2035(msn); technology=cfg.technology;
+d=struct('cruise_diameter_ft',cfg.cruise_diameters_ft,'high_lift_diameter_ft',cfg.high_lift_diameters_ft, ...
+    'WS',cfg.prop_WS,'AR',cfg.reference_AR,'taper',cfg.reference_taper,'technology',technology, ...
+    'anchor_high_lift_diameter_ft',cfg.anchor_high_lift_diameter_ft,'prop_gap_ft',cfg.prop_gap_ft, ...
+    'enforce_landing',cfg.enforce_landing,'include_all_operating',true,'refine',true, ...
+    'refine_step_ft',.05,'refine_WS_step',.5,'refine_WS_half_width',2,'refine_diameter',true, ...
+    'max_installed_shaft_kW',Inf,'eo',struct(), ...
+    'size_options',struct('weight_tolerance',.01), ...
+    'doplot',true,'save_plots',false,'plot_constraints',false, ...
+    'figure_visible','on','verbose',true,'output_dir','');
+% A common diagnostic lattice avoids mixing selectively refined WS grids.
+d.downsize_plot_cruise_ft=[];
+d.downsize_plot_diameter_ft=[];
+d.complete_downsize_plot_grid=true;
+for field=fieldnames(d).'
+    if ~isfield(opt,field{1}), opt.(field{1})=d.(field{1}); end
+end
+for field={'cruise_diameter_ft','high_lift_diameter_ft','WS'}
+    validateattributes(opt.(field{1}),{'numeric'},{'vector','positive','finite'});
+    opt.(field{1})=unique(opt.(field{1})(:).');
+end
+if isempty(opt.downsize_plot_cruise_ft)
+    for desired=[2 2.75 3.5 4.5 5 6]
+        [~,j]=min(abs(opt.cruise_diameter_ft-desired));
+        opt.downsize_plot_cruise_ft(end+1)=opt.cruise_diameter_ft(j);
+    end
+end
+opt.downsize_plot_cruise_ft=intersect(opt.downsize_plot_cruise_ft,opt.cruise_diameter_ft);
+if isempty(opt.downsize_plot_diameter_ft)
+    opt.downsize_plot_diameter_ft=unique([min(opt.high_lift_diameter_ft):.1:max(opt.high_lift_diameter_ft) ...
+        max(opt.high_lift_diameter_ft)]);
+end
+validateattributes(opt.downsize_plot_diameter_ft,{'numeric'},{'vector','positive','finite', ...
+    '>=',min(opt.high_lift_diameter_ft),'<=',max(opt.high_lift_diameter_ft)});
+opt.downsize_plot_diameter_ft=unique(opt.downsize_plot_diameter_ft);
+validateattributes(opt.AR,{'numeric'},{'scalar','positive','finite'});
+validateattributes(opt.taper,{'numeric'},{'scalar','positive','finite','<=',1});
+validateattributes(opt.refine_step_ft,{'numeric'},{'scalar','positive','finite'});
+validateattributes(opt.refine_WS_step,{'numeric'},{'scalar','positive','finite'});
+validateattributes(opt.refine_WS_half_width,{'numeric'},{'scalar','positive','finite'});
+validateattributes(opt.prop_gap_ft,{'numeric'},{'scalar','nonnegative','finite'});
+validateattributes(opt.max_installed_shaft_kW,{'numeric'},{'scalar','positive'});
+assert(min(opt.high_lift_diameter_ft)<max(opt.cruise_diameter_ft), ...
+    'AEGAcruiseproptrades2035:diameters','At least one cruise/high-lift pair must preserve the larger cruise props.');
+assert(opt.anchor_high_lift_diameter_ft>=max(opt.high_lift_diameter_ft), ...
+    'AEGAcruiseproptrades2035:anchors','Anchor diameter must accommodate the largest high-lift prop.');
+assert(~opt.save_plots || (opt.doplot && ~isempty(opt.output_dir)), ...
+    'AEGAcruiseproptrades2035:plots','Saved plots need doplot=true and output_dir.');
+msn.AR=opt.AR; msn.TR=opt.taper; msn.enforce_land=opt.enforce_landing;
+if isfield(msn,'prop_power')
+    msn.prop_power.max_installed_shaft_kW=min(msn.prop_power.max_installed_shaft_kW,opt.max_installed_shaft_kW);
+end
+msn.whkg=technology_value(opt,'pack_Whkg'); msn.fusable=technology_value(opt,'usable_fraction');
+msn.kWkg_m=technology_value(opt,'motor_kWkg'); msn.kWkg_pe=technology_value(opt,'inverter_kWkg');
+msn.eta_m=technology_value(opt,'motor_efficiency'); msn.eta_pe=technology_value(opt,'inverter_efficiency');
+% Common physical hubs separate prop diameter from spanwise placement.
+anchor=opt.anchor_high_lift_diameter_ft;
+inner=msn.WFus/2+anchor/2+opt.prop_gap_ft;
+msn.prop_high_lift_y_side_ft=inner+(0:2)*(anchor+opt.prop_gap_ft);
+msn.prop_y_fraction_side=[.2 .4 .6 1];
+o=opt.size_options;
+o.wing_mass_factor=technology_value(opt,'wing_mass_factor');
+o.coupled_flight_phases=true; o.cruise_disk_indices=[4 8];
+o.retract_fraction=0; o.retraction_policy='manual'; o.cruise_deployment=1;
+o.mechanism_build=[]; o.joint_seal=[];
+o.cruise_stall_speed_factor=1.2; o.cruise_CL_limit=msn.CLmax_clean/1.2^2;
+o.mission_profile=struct('name',"Cruise-prop diameter trade", ...
+    'route_speed_ktas',msn.Vkt,'route_distance_nm',msn.range,'reserve_speed_ktas',msn.Vkt);
+o.eo=opt.eo;
+cache=containers.Map('KeyType','char','ValueType','any');
+rows=repmat(blank(),0,1); count=0;
+modes=true; if opt.include_all_operating, modes=[false true]; end
+for failure=modes
+    for dc=opt.cruise_diameter_ft
+        if opt.verbose
+            fprintf('Cruise props %.2f ft: %s; sweeping six high-lift prop diameters.\n',dc,mode_name(failure));
+        end
+        for dh=opt.high_lift_diameter_ft
+            for ws=opt.WS, run_case(dc,dh,ws,failure,"coarse"); end
+        end
+    end
+end
+coarse=struct2table(rows);
+% Refine diameter around BOTH the minimum-mass sample and smallest passing
+% diameter, at each candidate W/S. No monotonic feasibility assumption.
+if opt.refine && opt.refine_diameter
+    for failure=modes
+        for dc=opt.cruise_diameter_ft
+            for ws=opt.WS
+                a=coarse(coarse.BatteryOutEnforced==failure & coarse.CruiseDiameter_ft==dc & ...
+                    coarse.WS_lb_ft2==ws & coarse.PassesScreen,:);
+                if isempty(a), continue; end
+                [~,j]=min(a.MTOW_lb);
+                centers=unique([a.HighLiftDiameter_ft(j) min(a.HighLiftDiameter_ft)]);
+                width=max(diff(opt.high_lift_diameter_ft));
+                if isempty(width), width=opt.refine_step_ft; end
+                for center=centers
+                    ds=max(min(opt.high_lift_diameter_ft),center-width):opt.refine_step_ft: ...
+                        min(max(opt.high_lift_diameter_ft),center+width);
+                    for dh=unique([ds center]), run_case(dc,dh,ws,failure,"diameter refinement"); end
+                end
+            end
+        end
+    end
+end
+if opt.refine && numel(opt.WS)>1
+    refined=struct2table(rows);
+    for failure=modes
+        for dc=opt.cruise_diameter_ft
+            a=refined(refined.BatteryOutEnforced==failure & refined.CruiseDiameter_ft==dc & refined.PassesScreen,:);
+            if isempty(a), continue; end
+            [~,j]=min(a.MTOW_lb); center=a(j,:);
+            wsFine=max(min(opt.WS),center.WS_lb_ft2-opt.refine_WS_half_width):opt.refine_WS_step: ...
+                min(max(opt.WS),center.WS_lb_ft2+opt.refine_WS_half_width);
+            dhFine=max(min(opt.high_lift_diameter_ft),center.HighLiftDiameter_ft-.1):opt.refine_step_ft: ...
+                min(max(opt.high_lift_diameter_ft),center.HighLiftDiameter_ft+.1);
+            for ws=unique([wsFine center.WS_lb_ft2])
+                for dh=unique([dhFine center.HighLiftDiameter_ft]), run_case(dc,dh,ws,failure,"joint W/S refinement"); end
+            end
+        end
+    end
+end
+if opt.complete_downsize_plot_grid
+    for failure=modes
+        for dc=opt.downsize_plot_cruise_ft
+            for dh=opt.downsize_plot_diameter_ft
+                for ws=opt.WS, run_case(dc,dh,ws,failure,"common plot grid"); end
+            end
+        end
+    end
+end
+study.inputs=msn; study.source_inputs=source_inputs; study.options=opt; study.case_count=count;
+study.cases=sortrows(struct2table(rows),{'BatteryOutEnforced','CruiseDiameter_ft','WS_lb_ft2','HighLiftDiameter_ft'});
+study.downsize_plot_cases=table();
+if opt.complete_downsize_plot_grid
+    common=on_grid(study.cases.CruiseDiameter_ft,opt.downsize_plot_cruise_ft) & ...
+        on_grid(study.cases.HighLiftDiameter_ft,opt.downsize_plot_diameter_ft) & ...
+        on_grid(study.cases.WS_lb_ft2,opt.WS);
+    study.downsize_plot_cases=study.cases(common,:);
+    expected=numel(modes)*numel(opt.downsize_plot_cruise_ft)* ...
+        numel(opt.downsize_plot_diameter_ft)*numel(opt.WS);
+    assert(height(study.downsize_plot_cases)==expected,'Incomplete common plot lattice.');
+end
+study.best=study.cases([],:); study.best.Selection=strings(0,1);
+study.best_details={}; study.downsize_limits=repmat(limit_blank(),0,1);
+for failure=modes
+    for dc=opt.cruise_diameter_ft
+        groupCases=study.cases(study.cases.BatteryOutEnforced==failure & study.cases.CruiseDiameter_ft==dc,:);
+        good=groupCases(groupCases.PassesScreen,:);
+        if isempty(good)
+            warning('AEGAcruiseproptrades2035:noFeasible','No passing sample: %.2f-ft cruise props, %s.',dc,mode_name(failure));
+            continue
+        end
+        [~,j]=min(good.MTOW_lb); add_best(good(j,:),"Minimum sampled MTOW");
+        smallest=min(good.HighLiftDiameter_ft);
+        a=sortrows(good(abs(good.HighLiftDiameter_ft-smallest)<1e-8,:),{'MTOW_lb'});
+        add_best(a(1,:),"Smallest passing high-lift diameter");
+        lim=limit_blank(); lim.Mode=mode_name(failure); lim.CruiseDiameter_ft=dc;
+        lim.SmallestPassingHighLift_ft=smallest; lim.WS_lb_ft2=a.WS_lb_ft2(1);
+        lim.InstalledShaft_kW=a.InstalledShaft_kW(1); lim.PowerDriver=a.PowerDriver(1);
+        lim.AtLowerDiameterBound=smallest<=min(opt.high_lift_diameter_ft)+1e-8;
+        below=groupCases(groupCases.HighLiftDiameter_ft<smallest-1e-8,:);
+        if isempty(below)
+            lim.SmallerDiameterResult="Lower search bound reached; no physical minimum established";
+        else
+            lim.AdjacentSmallerDiameter_ft=max(below.HighLiftDiameter_ft);
+            below=below(abs(below.HighLiftDiameter_ft-lim.AdjacentSmallerDiameter_ft)<1e-8,:);
+            lim.SmallerDiameterResult=strjoin(unique(below.Status)," | ");
+        end
+        study.downsize_limits(end+1,1)=lim;
+    end
+end
+study.downsize_limits=struct2table(study.downsize_limits);
+study.created_at=char(datetime('now')); study.matlab_version=version;
+study.model_note='Independent cruise/residual high-lift ratings; actual per-disk thrust and blowing; cruise swirl model; no blade-map validation.';
+study.phase_summary=phase_summary(study.best,study.best_details);
+study.figure_handles=gobjects(0);
+if opt.doplot, study.figure_handles=draw_summary(study); end
+if opt.plot_constraints
+    for j=1:height(study.best)
+        if study.best.Selection(j)~="Minimum sampled MTOW", continue; end
+        a=study.best_details{j};
+        AEGAconstraint(a.msn,a.CD0,true,a.WSR,a.CLmax,a.CLmax_TO);
+    end
+end
+if ~isempty(opt.output_dir), save_study(study); end
+if opt.verbose
+    disp(study.best(:,{'Mode','CruiseDiameter_ft','HighLiftDiameter_ft','WS_lb_ft2', ...
+        'MTOW_lb','InstalledShaft_kW','HighLiftMotorEach_kW','CruiseMotorEach_kW','PowerDriver','Selection'}));
+end
+
+    function row=run_case(dc,dh,ws,failure,stage)
+        key=sprintf('%.8f_%.8f_%.8f_%d',dc,dh,ws,failure);
+        if isKey(cache,key), entry=cache(key); row=entry.row; return; end
+        count=count+1; row=blank(); row.CaseID=count; row.Stage=stage;
+        row.Mode=mode_name(failure); row.BatteryOutEnforced=failure;
+        row.CruiseDiameter_ft=dc; row.HighLiftDiameter_ft=dh; row.WS_lb_ft2=ws;
+        row.AtCruiseDiameterBound=abs(dc-min(opt.cruise_diameter_ft))<1e-8 || abs(dc-max(opt.cruise_diameter_ft))<1e-8;
+        row.AtWSBound=abs(ws-min(opt.WS))<1e-8 || abs(ws-max(opt.WS))<1e-8;
+        m=msn; m.prop_D_side_ft=[dh dh dh dc]; sizeopt=o;
+        sizeopt.enforce_battery_out=failure;
+        fitsemi=m.prop_high_lift_y_side_ft(end)+(dh+dc)/2+opt.prop_gap_ft;
+        sizeopt.initial_MTOW=max(3200,1.03*(2*fitsemi)^2*ws/m.AR);
+        out=[];
+        try
+            assert(dh<dc,'AEGAcruiseproptrades2035:architecture','High-lift diameter must be smaller than cruise diameter.');
+            out=AEGAsize(m,ws,sizeopt);
+            % Explicitly check the normal constraints WITHOUT a diagram or
+            % console print. AEGAsize also calls this during sizing.
+            con=AEGAconstraint(out.msn,out.CD0,false,out.WSR,out.CLmax,out.CLmax_TO);
+            assert(abs(con.S_land_ft-out.con.S_land_ft)<1e-8);
+            row.Converged=out.converged; row.PassesScreen=out.feasible;
+            row.Status=string(out.status); row.MTOW_lb=out.MTOW;
+            row.Pack_kWh=out.pack_kWh; row.Battery_lb=out.W.battery;
+            row.PropBlade_lb=out.W.propeller; row.WingArea_ft2=out.SW; row.Span_ft=out.span;
+            row.InstalledShaft_kW=out.PTO_kW;
+            row.NormalRequired_kW=out.Pnormal_kW; row.LowSpeedScreenRequired_kW=out.Pscreen_kW;
+            row.FailureRequired_kW=max(out.eo.required_kW(2:5));
+            row.BatteryOutPowerPass=isfinite(row.FailureRequired_kW) && ...
+                out.PTO_kW>=row.FailureRequired_kW*(1-1e-8);
+            if failure && ~row.BatteryOutPowerPass
+                row.PassesScreen=false; row.Status="Battery-out power insufficient";
+            end
+            row.CruiseRequiredShaft_kW=out.Pcruise_shaft_kW;
+            row.CruiseBattery_kW=out.Pcruise_kW; row.CruisePropEfficiency=out.eta_prop;
+            if out.wingtip_prop.enabled
+                z=out.wingtip_prop;
+                row.WingtipInducedReduction_percent=100*z.induced_reduction_fraction;
+                row.WingtipSwirlDrag_lb=z.swirl_drag_lb;
+                row.WingtipSwirlPower_kW=z.swirl_power_kW;
+                row.CruiseRPM=max(z.rpm);
+            end
+            row.CruiseRatingFraction=out.cruise_rating_fraction;
+            row.HighLiftMotorEach_kW=out.PTO_kW*(1-out.cruise_rating_fraction)/6;
+            row.CruiseMotorEach_kW=out.PTO_kW*out.cruise_rating_fraction/2;
+            row.CruisePairRating_kW=2*row.CruiseMotorEach_kW;
+            row.HighLiftGroupRating_kW=6*row.HighLiftMotorEach_kW;
+            row.PowerDriver=string(out.power_driver); row.NormalDriver=string(con.driver);
+            row.WorstBattery=out.eo.worst_battery; row.WorstFailureDriver=string(out.eo.worst_driver);
+            row.Landing_ft=con.S_land_ft; row.LandingCheckPass=con.landing_ok;
+            row.VS0Model_kt=con.VS0_kt; row.CleanStall_kt=out.VS1;
+            row.WeightResidual_lb=out.weight_residual_lb;
+            row.NormalConstraintPass=out.PTO_kW>=con.PW_hp_lb*out.MTOW*.745699872*(1-1e-8);
+            if ~row.NormalConstraintPass, row.PassesScreen=false; row.Status="Normal constraint power insufficient"; end
+            ph=out.operating_phases; required=ph.RequiredForSizing;
+            row.PhaseSchedulePass=all(ph.LiftPass(required) & ph.PowerPass(required) & ph.ThrustBalancePass(required));
+            take=ph(ph.Phase=="Takeoff",:); app=ph(ph.Phase=="Approach",:);
+            row.TakeoffThrust_lb=take.Thrust_lb;
+            row.HighLiftTakeoffThrust_lb=take.HighLiftThrust_lb;
+            row.CruiseTakeoffThrust_lb=take.CruiseThrust_lb;
+            climb=ph(ph.Phase=="Initial climb",:);
+            row.HighLiftClimbShaft_kW=climb.HighLiftShaft_kW;
+            row.CruiseClimbShaft_kW=climb.CruiseShaft_kW;
+            row.HighLiftClimbThrust_lb=climb.HighLiftThrust_lb;
+            row.CruiseClimbThrust_lb=climb.CruiseThrust_lb;
+            row.ApproachThrottle_percent=app.CruiseThrottle_percent;
+            row.ApproachLiftCapacity=app.CLmaxCredited;
+            TOP=ws*out.MTOW/(out.PTO_kW/.745699872*out.CLmax_TO);
+            row.TakeoffModel_ft=1.66*(4.9*TOP+.009*TOP^2);
+            row.TakeoffCheckPass=row.TakeoffModel_ft<=msn.S_field*(1+1e-8);
+            if ~row.TakeoffCheckPass, row.PassesScreen=false; row.Status="Takeoff field length exceeded"; end
+            if out.PTO_kW>opt.max_installed_shaft_kW
+                row.PassesScreen=false; row.Status="Team installed-shaft-power budget exceeded";
+            end
+            row.AtLowerDiameterBound=dh<=min(opt.high_lift_diameter_ft)+1e-8;
+            row.AtUpperDiameterBound=dh>=max(opt.high_lift_diameter_ft)-1e-8;
+        catch err
+            if startsWith(err.identifier,'MATLAB:assertion'), rethrow(err); end
+            row.Status=string(err.identifier)+": "+string(err.message);
+            row.PassesScreen=false;
+        end
+        rows(end+1,1)=row;
+        cache(key)=struct('row',row,'out',out);
+    end
+    function add_best(row,label)
+        row.Selection=label; study.best=[study.best;row];
+        key=sprintf('%.8f_%.8f_%.8f_%d',row.CruiseDiameter_ft,row.HighLiftDiameter_ft,row.WS_lb_ft2,row.BatteryOutEnforced);
+        entry=cache(key); study.best_details{end+1}=entry.out;
+    end
+end
+
+function value=technology_value(opt,name)
+value=opt.technology.(name);
+end
+function name=mode_name(failure)
+if failure, name="Battery-out sized"; else, name="All operating only"; end
+end
+function r=blank()
+r=struct('CaseID',0,'Stage',"",'Mode',"",'BatteryOutEnforced',false, ...
+    'CruiseDiameter_ft',NaN,'HighLiftDiameter_ft',NaN,'WS_lb_ft2',NaN, ...
+    'MTOW_lb',NaN,'Pack_kWh',NaN,'Battery_lb',NaN,'PropBlade_lb',NaN, ...
+    'WingArea_ft2',NaN,'Span_ft',NaN,'InstalledShaft_kW',NaN, ...
+    'NormalRequired_kW',NaN,'LowSpeedScreenRequired_kW',NaN,'FailureRequired_kW',NaN, ...
+    'BatteryOutPowerPass',false,'CruiseRequiredShaft_kW',NaN, ...
+    'CruiseBattery_kW',NaN,'CruisePropEfficiency',NaN,'CruiseRatingFraction',NaN, ...
+    'WingtipInducedReduction_percent',NaN,'WingtipSwirlDrag_lb',NaN, ...
+    'WingtipSwirlPower_kW',NaN,'CruiseRPM',NaN, ...
+    'HighLiftMotorEach_kW',NaN,'CruiseMotorEach_kW',NaN,'PowerDriver',"", ...
+    'CruisePairRating_kW',NaN,'HighLiftGroupRating_kW',NaN, ...
+    'HighLiftClimbShaft_kW',NaN,'CruiseClimbShaft_kW',NaN, ...
+    'HighLiftClimbThrust_lb',NaN,'CruiseClimbThrust_lb',NaN, ...
+    'NormalDriver',"",'WorstBattery',NaN,'WorstFailureDriver',"", ...
+    'Landing_ft',NaN,'LandingCheckPass',false,'VS0Model_kt',NaN,'CleanStall_kt',NaN, ...
+    'TakeoffModel_ft',NaN,'TakeoffCheckPass',false,'TakeoffThrust_lb',NaN, ...
+    'HighLiftTakeoffThrust_lb',NaN,'CruiseTakeoffThrust_lb',NaN, ...
+    'ApproachThrottle_percent',NaN,'ApproachLiftCapacity',NaN, ...
+    'NormalConstraintPass',false,'PhaseSchedulePass',false, ...
+    'Converged',false,'PassesScreen',false,'WeightResidual_lb',NaN, ...
+    'AtLowerDiameterBound',false,'AtUpperDiameterBound',false, ...
+    'AtCruiseDiameterBound',false,'AtWSBound',false,'Status',"");
+end
+function r=limit_blank()
+r=struct('Mode',"",'CruiseDiameter_ft',NaN,'SmallestPassingHighLift_ft',NaN, ...
+    'WS_lb_ft2',NaN,'InstalledShaft_kW',NaN,'PowerDriver',"", ...
+    'AtLowerDiameterBound',false,'AdjacentSmallerDiameter_ft',NaN,'SmallerDiameterResult',"");
+end
+function t=phase_summary(best,details)
+t=table();
+for j=1:height(best)
+    if best.Selection(j)~="Minimum sampled MTOW", continue; end
+    a=details{j}.operating_phases;
+    a.Mode=repmat(best.Mode(j),height(a),1);
+    a.CruiseDiameter_ft=repmat(best.CruiseDiameter_ft(j),height(a),1);
+    a.HighLiftDiameter_ft=repmat(best.HighLiftDiameter_ft(j),height(a),1);
+    t=[t;a]; %#ok<AGROW>
+end
+end
+function handles=draw_summary(s)
+o=s.options; t=s.best(s.best.Selection=="Minimum sampled MTOW",:);
+modes=true; if o.include_all_operating, modes=[false true]; end
+f=figure('Visible',o.figure_visible,'Color','w','Position',[100 100 1200 600]);
+tiledlayout(2,2,'TileSpacing','compact','Padding','compact');
+cols={'MTOW_lb','HighLiftDiameter_ft','InstalledShaft_kW','CruiseBattery_kW'};
+labels={'MTOW, lb','Selected high-lift diameter, ft','Installed shaft rating, kW','Cruise battery power, kW'};
+colors=[0 .35 .65;.8 .3 .05];
+for k=1:4
+    nexttile; hold on; grid on;
+    for failure=[false true]
+        a=sortrows(t(t.BatteryOutEnforced==failure,:),'CruiseDiameter_ft');
+        if isempty(a), continue; end
+        plot(a.CruiseDiameter_ft,a.(cols{k}),'-o','Color',colors(1+failure,:), ...
+            'LineWidth',2,'DisplayName',mode_name(failure));
+    end
+    xlabel('Cruise prop diameter, ft'); ylabel(labels{k});
+    if k==1, legend('Location','best'); end
+end
+sgtitle(AEGAtradetitle2035('Cruise and High-Lift Propeller Sizing',s.inputs, ...
+    sprintf('AR %.1f | taper %.2f | 2 cruise + 6 high-lift propellers | best sampled feasible MTOW',s.inputs.AR,s.inputs.TR)),'Color','k','FontSize',12);
+light_style(f); handles=f;
+if o.save_plots, record(f,o.output_dir,'04_cruise_prop_trade'); end
+f=figure('Visible',o.figure_visible,'Color','w','Position',[100 100 1200 550]);
+tiledlayout(1,numel(modes),'TileSpacing','compact','Padding','compact');
+plotCases=s.downsize_plot_cases;
+if isempty(plotCases)
+    plotCases=s.cases(on_grid(s.cases.HighLiftDiameter_ft,o.high_lift_diameter_ft) & ...
+        on_grid(s.cases.WS_lb_ft2,o.WS),:);
+end
+for failure=modes
+    nexttile; hold on; grid on; colors=lines(numel(o.downsize_plot_cruise_ft));
+    for j=1:numel(o.downsize_plot_cruise_ft)
+        dc=o.downsize_plot_cruise_ft(j);
+        a=plotCases(plotCases.BatteryOutEnforced==failure & plotCases.CruiseDiameter_ft==dc,:);
+        ds=unique(a.HighLiftDiameter_ft); yy=nan(size(ds)); rejected=nan(size(ds));
+        for k=1:numel(ds)
+            b=a(abs(a.HighLiftDiameter_ft-ds(k))<1e-8,:); good=b.PassesScreen;
+            if any(good), yy(k)=min(b.MTOW_lb(good));
+            elseif any(b.Converged), rejected(k)=min(b.MTOW_lb(b.Converged)); end
+        end
+        plot(ds,yy,'-o','Color',colors(j,:),'LineWidth',1.7,'DisplayName',sprintf('%.2f-ft cruise props',dc));
+        plot(ds,rejected,'x','Color',colors(j,:),'HandleVisibility','off');
+    end
+    xlabel('High-lift propeller diameter, ft');
+    if numel(o.WS)==1, ylabel('MTOW, lb');
+    else, ylabel('Minimum feasible sampled MTOW, lb'); end
+    xlim([min(o.downsize_plot_diameter_ft)-.05 max(o.downsize_plot_diameter_ft)+.05]);
+    xticks(unique([min(o.downsize_plot_diameter_ft):.25:max(o.downsize_plot_diameter_ft) max(o.downsize_plot_diameter_ft)]));
+    shown=plotCases.MTOW_lb(plotCases.BatteryOutEnforced==failure & plotCases.Converged);
+    shown=shown(isfinite(shown));
+    if ~isempty(shown)
+        pad=max(5,.04*(max(shown)-min(shown)));
+        ylim([10*floor((min(shown)-pad)/10) 10*ceil((max(shown)+pad)/10)]);
+    end
+    title(mode_name(failure),'Color','k'); legend('Location','eastoutside');
+end
+scope=sprintf('Common W/S grid %s lb/ft^2',mat2str(o.WS));
+if numel(o.WS)==1, scope=sprintf('W/S fixed at %.1f lb/ft^2',o.WS); end
+sgtitle(AEGAtradetitle2035('High-Lift Propeller Diameter Sensitivity',s.inputs, ...
+    sprintf('%s | AR %.1f | x: rejected | high-lift diameter must be below cruise diameter', ...
+    scope,s.inputs.AR)),'Color','k','FontSize',12);
+light_style(f); handles(end+1)=f;
+if o.save_plots, record(f,o.output_dir,'05_high_lift_downsizing'); end
+f=figure('Visible',o.figure_visible,'Color','w','Position',[100 100 1200 650]);
+tiledlayout(1,numel(modes),'TileSpacing','compact','Padding','compact');
+colors=[0 .35 .65;.8 .3 .05];
+for failure=modes
+    nexttile; hold on; grid on;
+    a=sortrows(t(t.BatteryOutEnforced==failure,:),'CruiseDiameter_ft');
+    if isempty(a), title(mode_name(failure),'Color','k'); continue; end
+    b=bar(a.CruiseDiameter_ft,[a.HighLiftTakeoffThrust_lb a.CruiseTakeoffThrust_lb],'stacked');
+    for k=1:2, b(k).FaceColor=colors(k,:); end
+    offset=.03*max(a.TakeoffThrust_lb);
+    for j=1:height(a)
+        text(a.CruiseDiameter_ft(j),a.TakeoffThrust_lb(j)+offset, ...
+            sprintf('%.2f',a.HighLiftDiameter_ft(j)), ...
+            'Rotation',90,'HorizontalAlignment','left','VerticalAlignment','middle','FontSize',9);
+    end
+    xticks(a.CruiseDiameter_ft); xtickangle(45); ylim([0 1.22*max(t.TakeoffThrust_lb)]);
+    xlabel('Cruise prop diameter, ft'); ylabel('Total group thrust at takeoff, lb');
+    title(mode_name(failure),'Color','k');
+    legend(b,{'Six high-lift props','Two cruise props'},'Location','southoutside');
+end
+sgtitle({'Takeoff Thrust Allocation at Selected Designs', ...
+    sprintf('All eight motors at full rated power; %.1f KTAS; separate cruise/high-lift ratings',1.1*s.inputs.VS0), ...
+    'Labels above bars: high-lift diameter (ft)'},'Color','k');
+light_style(f); handles(end+1)=f;
+if o.save_plots, record(f,o.output_dir,'07_takeoff_thrust_split'); end
+f=figure('Visible',o.figure_visible,'Color','w','Position',[100 100 1200 620]);
+tiledlayout(1,numel(modes),'TileSpacing','compact','Padding','compact');
+for failure=modes
+    nexttile; hold on; grid on;
+    a=sortrows(t(t.BatteryOutEnforced==failure,:),'CruiseDiameter_ft');
+    if isempty(a), title(mode_name(failure),'Color','k'); continue; end
+    bars=bar(a.CruiseDiameter_ft,[a.CruisePairRating_kW a.HighLiftGroupRating_kW],'stacked');
+    bars(1).FaceColor=[0 .35 .65]; bars(2).FaceColor=[.8 .3 .05];
+    if isfinite(o.max_installed_shaft_kW), yline(o.max_installed_shaft_kW,'--','Power budget'); end
+    xlabel('Cruise prop diameter, ft'); ylabel('Installed group shaft rating, kW');
+    title(mode_name(failure),'Color','k');
+    legend(bars,{'Cruise pair: mission requirement','High-lift group: residual + lift/failure'},'Location','southoutside');
+end
+sgtitle({'Installed Propulsion Power by Motor Group', ...
+    'Motor power split is independent of propeller disk area'},'Color','k');
+light_style(f); handles(end+1)=f;
+if o.save_plots, record(f,o.output_dir,'08_required_group_power'); end
+end
+function light_style(f)
+set(findall(f,'Type','axes'),'Color','w','XColor','k','YColor','k','FontSize',11,'GridColor',[.75 .75 .75]);
+set(findall(f,'Type','text'),'Color','k');
+set(findall(f,'Type','legend'),'Color','w','TextColor','k');
+end
+function tf=on_grid(values,grid)
+tf=any(abs(values(:)-grid(:).')<1e-8,2);
+end
+function record(f,folder,name)
+if ~isfolder(folder), mkdir(folder); end
+exportgraphics(f,fullfile(folder,[name '.png']),'Resolution',180);
+savefig(f,fullfile(folder,[name '.fig']));
+end
+function save_study(s)
+AEGAtradeassumptions2035(s);
+folder=s.options.output_dir; if ~isfolder(folder), mkdir(folder); end
+writetable(s.cases,fullfile(folder,'01_all_cases.csv'));
+writetable(s.best,fullfile(folder,'02_selected_designs.csv'));
+writetable(s.downsize_limits,fullfile(folder,'03_downsize_limits.csv'));
+writetable(s.phase_summary,fullfile(folder,'06_selected_flight_phases.csv'));
+if ~isempty(s.downsize_plot_cases)
+    writetable(s.downsize_plot_cases,fullfile(folder,'07_common_downsize_plot_cases.csv'));
+end
+saved=s; saved.figure_handles=[]; save(fullfile(folder,'cruise_prop_trade.mat'),'saved','-v7.3');
+fid=fopen(fullfile(folder,'RUN_NOTES.txt'),'w'); assert(fid>=0);
+guard=onCleanup(@() fclose(fid));
+fprintf(fid,'Executed %s; MATLAB %s; %d unique re-sized cases.\n',s.created_at,s.matlab_version,s.case_count);
+fprintf(fid,'Six identical high-lift props at common physical hubs; two cruise hubs at fixed-wing tips.\n');
+fprintf(fid,'Downsizing figure uses representative cruise diameters and the common high-lift diameter grid %s, with identical W/S coverage at every point. Additional selective refinement cases inform best-design selections but are excluded from the common-grid diagnostic curves. Corners can remain where the best feasible sampled W/S or governing constraint changes.\n',mat2str(s.options.downsize_plot_diameter_ft));
+fprintf(fid,'AR %.2f, taper %.3f, W/S grid %s; cruise diameters %s; high-lift range %.2f-%.2f ft.\n',s.inputs.AR,s.inputs.TR,mat2str(s.options.WS),mat2str(s.options.cruise_diameter_ft),min(s.options.high_lift_diameter_ft),max(s.options.high_lift_diameter_ft));
+fprintf(fid,'%.0f nm at %.0f KTAS + %.0f min reserve; %.0f Wh/kg PACK, %.0f%% usable, wing mass factor %.2f.\n',s.inputs.range,s.inputs.Vkt,s.inputs.reserve,s.inputs.whkg,100*s.inputs.fusable,s.options.technology.wing_mass_factor);
+fprintf(fid,'Normal AEGAconstraint calls doplot=false. Actual-throttle phase lift/thrust, two-motor cruise, separate three-stop mission included.\n');
+fprintf(fid,'%s\n',s.model_note);
+fprintf(fid,'Cruise pair covers maximum cruise/reserve demand plus declared margin, or a supplied motor rating. High-lift rating closes residual thrust, powered-lift and battery-out needs. Group thrust comes from separate actuator disks, not rating or area fractions.\n');
+fprintf(fid,'Four battery failures when enforced; motor pairs %s, numbered L1..L4,R1..R4. No failed-bank crossfeed or overload. Asymmetric trim and bank energy allocation are not validated.\n',mat2str(AEGAbatterypairs2035(s.inputs)));
+fprintf(fid,'Landing enforced %d; requested reverse_TW %.2f, conditional on the selected ground-roll model and available cruise power; clean-stall-limit enforced %d.\n',s.inputs.enforce_land,s.inputs.reverse_TW,s.inputs.enforce_VS1);
+fprintf(fid,'Smallest passing diameter is bounded by sampled diameter/W/S ranges and model power ceiling; it can be heavier than the minimum-MTOW choice.\n');
+fprintf(fid,'Best sampled results, not proven optima. No physical RPM/torque/blade limits, hardware-mass redesign, CG/trim, failure energy-access or swirl-drag validation.\n');
+end

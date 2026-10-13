@@ -1,0 +1,47 @@
+function [builds,seals,technology] = AEGAtelescopingassumptions2035()
+% Optimistic conceptual targets, informed by research; not qualified hardware.
+% See docs/TELESCOPING_TRADE.md for primary sources and applicability limits.
+names = ["Minimum-mass target" "Very light" "Lightweight target" ...
+    "Lightweight plus" "Extra joint stiffness" "Extra durability" "Upper lightweight allowance"];
+builds = repmat(struct(),1,7);
+for j = 1:7
+    u = (j-1)/6;
+    builds(j).name = names(j);
+    builds(j).actuator_each_kg = .35+.50*u;
+    builds(j).actuator_kg_per_m_stroke = .08+.16*u;
+    builds(j).guides_kg_per_m = .12+.24*u;
+    builds(j).locks_bearings_each_kg = .45+.75*u;
+    builds(j).controls_wiring_total_kg = .25+.35*u;
+    builds(j).seal_kg_per_m = .035+.065*u;
+    builds(j).sleeve_laminate_mm = .25+.60*u;
+    builds(j).cfrp_density_kg_m3 = 1600;
+    builds(j).cap_allowable_MPa = 600-240*u;
+    builds(j).web_allowable_MPa = 35-15*u;
+    builds(j).overlap_min_m = .25+.10*u;
+    builds(j).overlap_stroke_fraction = .35+.20*u;
+    builds(j).local_fittings_fraction = .15+.25*u;
+    builds(j).torsion_buckling_reserve_fraction = .20+.40*u;
+end
+seals = repmat(struct(),1,3);
+sealnames = ["Flush sealed target" "Small step / good seal" "Visible step / imperfect seal"];
+for j = 1:3
+    seals(j).name = sealnames(j);
+    closed = [.10 .20 .50]; opened = [.25 .50 1.00]; gaps = [.25 .50 1.00];
+    leak = [.01 .05 .15]; strip = [15 25 40];
+    seals(j).step_closed_mm = closed(j);
+    seals(j).step_extended_mm = opened(j);
+    seals(j).gap_mm = gaps(j);
+    seals(j).unsealed_fraction = leak(j);
+    seals(j).fairing_strip_mm = strip(j);
+    % Effective area coefficients are analyst estimates, not ESDU fits.
+    % Chordwise seams are largely parallel to flow: orientation is explicit.
+    seals(j).step_effective_Cd = .5;
+    seals(j).seam_orientation_factor = .25;
+    seals(j).leak_effective_Cd = .6;
+    seals(j).fairing_Cf = .0033;
+    seals(j).fairing_form_factor = 1.3;
+end
+technology = struct('year',2035,'pack_Whkg',400,'usable_fraction',.90, ...
+    'wing_mass_factor',1.0,'motor_kWkg',15,'inverter_kWkg',14, ...
+    'motor_efficiency',.95,'inverter_efficiency',.97);
+end

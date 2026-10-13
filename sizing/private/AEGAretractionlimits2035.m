@@ -1,0 +1,53 @@
+function h = AEGAretractionlimits2035(msn,DG,S,b,base_drag,opt)
+% Stroke capability from cruise lift, fixed prop packing, nesting and drag.
+% A requested substantial minimum is explicit; it is not an aerodynamic gain.
+v = max([opt.mission_profile.route_speed_ktas(:).' opt.mission_profile.reserve_speed_ktas]);
+q = .5*msn.rho_cr*(v*1.688)^2;
+minimum_area = DG/(q*opt.cruise_CL_limit);
+ratio = min(1,max(0,minimum_area/S));
+t = msn.TR;
+% Invert the existing trapezoid hidden-area relation, not span^2 scaling.
+if abs(1-t)<1e-10, lift_limit = 1-ratio;
+else, lift_limit = (-t+sqrt(t^2+(1-t)*(1+t)*(1-ratio)))/(1-t); end
+core_min = msn.prop_high_lift_y_side_ft(end)+ ...
+    (msn.prop_D_side_ft(end-1)+msn.prop_D_side_ft(end))/2+opt.prop_gap_ft;
+hardware_limit = 1-2*core_min/b;
+semi_m = b/2*.3048; p = opt.mechanism_build;
+nesting_limit = min((1-p.overlap_min_m/semi_m)/2,1/(2+p.overlap_stroke_fraction))-1e-6;
+covered_ratio = min(1,msn.SCOV/S);
+covered_limit = (-t+sqrt(t^2+(1-t)*(1+t)*(1-covered_ratio)))/(1-t);
+upper = min([opt.retraction_bounds(2) lift_limit hardware_limit nesting_limit covered_limit]);
+assert(upper>=opt.retraction_bounds(1)-1e-8,'AEGAretractionlimits2035:capability', ...
+    'Requested %.1f%% capability exceeds cruise-lift / prop-packing / nesting ceiling %.1f%%.', ...
+    100*opt.retraction_bounds(1),100*upper);
+m = msn; m.Vkt = v;
+o = opt; o.cruise_deployment = 0;
+powered=isfield(msn,'wingtip_prop') && msn.wingtip_prop.enabled;
+if upper>0
+    z = fminbnd(@objective_at,0,upper,optimset('Display','off','TolX',1e-6));
+    candidates = [0 z upper];
+    [~,j] = min(arrayfun(@objective_at,candidates)); ideal = candidates(j);
+else, ideal = 0; end
+capacity = min(upper,max(opt.retraction_bounds(1),ideal));
+h = struct('fraction',capacity,'minimum_cruise_area_ft2',minimum_area, ...
+    'cruise_reference_speed_ktas',v,'lift_fraction_ceiling',lift_limit, ...
+    'hardware_fraction_ceiling',hardware_limit,'nesting_fraction_ceiling',nesting_limit, ...
+    'fraction_ceiling',upper,'drag_optimum_fraction',ideal, ...
+    'minimum_capability_active',ideal<opt.retraction_bounds(1), ...
+    'drag_at_full_span_lb',drag_at(0),'drag_at_minimum_span_lb',drag_at(capacity));
+h.optimization_metric='drag';
+if powered, h.optimization_metric='shaft power'; end
+h.operating_optimum_fraction=ideal;
+% drag_optimum_fraction is retained as the legacy export field name; with
+% powered interaction enabled the selected optimum minimizes shaft power.
+    function D = drag_at(r)
+        o.retract_fraction = r;
+        g = AEGAtelescopingcruise(m,DG,S,b,base_drag,o); D = g.drag;
+    end
+    function value=objective_at(r)
+        o.retract_fraction=r;
+        g=AEGAtelescopingcruise(m,DG,S,b,base_drag,o);
+        value=g.drag;
+        if powered, value=g.wingtip_prop.shaft_kW; end
+    end
+end

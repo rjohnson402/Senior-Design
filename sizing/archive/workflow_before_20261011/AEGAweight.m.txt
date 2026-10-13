@@ -136,7 +136,9 @@ WFURN     = KFURN*WFURN_raw;
 
 %% ======================= TOTALS ========================================
 Wstruct = WWING + WHT + WVT + WFUSE + WLGM + WLGN;             % Eq. 136
-Wprop   = WMOT + WPE + WTHERM + WPROP + dWinst;                % Eq. 137
+Wreverse=0;
+if isfield(msn,'reverse_hardware_lb'), Wreverse=msn.reverse_hardware_lb; end
+Wprop   = WMOT + WPE + WTHERM + WPROP + dWinst + Wreverse;     % Eq. 137 + concept hardware
 Wsys    = WSC + WAV + WELEC + WFURN;                           % Eq. 138
 Wmarg   = fmarg*(Wstruct + Wprop + Wsys);
 
@@ -145,6 +147,7 @@ W.fuse        = WFUSE;   W.gear       = WLGM + WLGN;
 W.structure   = Wstruct;
 W.motor       = WMOT;    W.power_elec = WPE;    W.thermal = WTHERM;
 W.propeller   = WPROP;   W.install    = dWinst;
+W.reverse_hardware = Wreverse;
 W.propulsion  = Wprop;
 W.controls    = WSC;     W.avionics   = WAV;
 W.electrical  = WELEC;   W.furnishings = WFURN;

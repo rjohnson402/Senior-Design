@@ -1,0 +1,8 @@
+% Current two-cruise / six-high-lift aircraft. Inputs remain editable centrally.
+msn = AEGAinputs();
+[msn,baselineOptions] = AEGAstudycase2035(msn);
+out = AEGAtrade_size(msn,msn.WS_design,baselineOptions);
+fprintf('Current reference: %.1f lb, %.2f ft^2, %.2f ft span, landing %.0f ft, passes %d\n', ...
+    out.MTOW,out.SW,out.span,out.con.S_land_ft,out.feasible);
+AEGAconstraint(out.msn,out.CD0,true,out.WSR,out.CLmax,out.CLmax_TO);
+
